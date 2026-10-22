@@ -21,13 +21,40 @@
 </head>
 <body>
   <div id="app"></div>
+  <script>
+    // Show problems on the loading screen instead of freezing silently
+    (function () {
+      function show(msg) {
+        var el = document.getElementById('load-msg');
+        var bar = document.querySelector('.load-bar');
+        if (bar) bar.style.display = 'none';
+        if (el) { el.innerHTML = msg; el.style.color = '#ffb4b4'; el.style.maxWidth = '520px'; el.style.lineHeight = '1.6'; }
+      }
+      window.__showLoadError = show;
+      window.addEventListener('error', function (e) {
+        if (document.getElementById('loading').classList.contains('hidden')) return;
+        show('No se pudo arrancar el juego.<br><small>' + (e.message || 'Error desconocido') + '</small>');
+      });
+      window.addEventListener('unhandledrejection', function (e) {
+        if (document.getElementById('loading').classList.contains('hidden')) return;
+        show('No se pudo arrancar el juego.<br><small>' + ((e.reason && e.reason.message) || e.reason) + '</small>');
+      });
+      setTimeout(function () {
+        if (!document.getElementById('loading').classList.contains('hidden') && !window.__game) {
+          show(location.protocol === 'file:' && document.querySelector('script[type="module"]')
+            ? 'El navegador bloquea este archivo abierto con doble clic. Abre <b>Roadster.html</b> (la versión de un solo archivo) o usa un servidor local.'
+            : 'Está tardando mucho. Comprueba tu conexión y que el navegador tenga WebGL activado, y recarga la página.');
+        }
+      }, 20000);
+    })();
+  </script>
 
   <!-- Loading -->
   <div id="loading" class="screen">
     <div class="load-inner">
       <div class="wordmark">ROADSTER</div>
       <div class="load-bar"><span></span></div>
-      <p class="muted">Preparando el sitio de pruebas de McGregor…</p>
+      <p class="muted" id="load-msg">Preparando el sitio de pruebas de McGregor…</p>
     </div>
   </div>
 

@@ -8,10 +8,12 @@ Juego 3D en tercera persona del nuevo **Tesla Roadster** (presentado el 15 de oc
 
 ## Cómo jugar
 
-No hace falta instalar nada. Es una página web estática (HTML + JavaScript con [three.js](https://threejs.org) desde CDN).
+**Lo más fácil:** descarga [`dist/Roadster.html`](dist/Roadster.html) y ábrelo con doble clic. Es un único archivo con todo dentro (también el motor 3D), así que funciona sin instalar nada y sin internet. Usa Chrome, Edge o Firefox actualizados.
 
-- **Opción 1, en local:** en la carpeta del repositorio ejecuta `python3 -m http.server 8000` y abre `http://localhost:8000`. Hace falta un servidor porque los módulos de JavaScript no cargan si abres `index.html` con doble clic.
-- **Opción 2, en GitHub Pages:** en GitHub ve a *Settings → Pages*, elige *Deploy from a branch*, selecciona la rama y la carpeta `/ (root)`. En un minuto tendrás un enlace para jugar desde el navegador o el móvil.
+Otras opciones:
+- **GitHub Pages:** en *Settings → Pages*, elige *Deploy from a branch*, la rama y la carpeta `/ (root)`. Tendrás un enlace para jugar desde el navegador o el móvil.
+- **Desde el código fuente:** ejecuta `python3 -m http.server 8000` en la carpeta y abre `http://localhost:8000`. El `index.html` no funciona con doble clic porque usa varios archivos de JavaScript.
+- **Volver a generar el archivo único** tras cambiar el código: `npm install` y después `npm run build`.
 
 ## Lo que hay en el juego
 

@@ -1,0 +1,15 @@
+{
+  "name": "roadster-mcgregor",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Juego de fans en tercera persona del nuevo Roadster en SpaceX McGregor",
+  "scripts": {
+    "build": "node tools/build.mjs",
+    "start": "python3 -m http.server 8000"
+  },
+  "devDependencies": {
+    "esbuild": "0.20.2",
+    "three": "0.160.0"
+  }
+}

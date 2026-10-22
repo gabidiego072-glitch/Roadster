@@ -36,7 +36,14 @@ let colorId = store.get('color2', 'white');
 let useKmh = store.get('kmh', true);
 
 // ---------------- Renderer / scene ----------------
-const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+let renderer;
+try {
+  renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+} catch (err) {
+  window.__showLoadError?.('Tu navegador o tu tarjeta gráfica no tienen WebGL activado, y el juego lo necesita para el 3D. Prueba con Chrome, Edge o Firefox actualizados.');
+  throw err;
+}
+const isWebGL2 = renderer.capabilities.isWebGL2;
 renderer.setSize(innerWidth, innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -49,7 +56,7 @@ scene.fog = new THREE.FogExp2(0x080b16, 0.0011);
 const camera = new THREE.PerspectiveCamera(62, innerWidth / innerHeight, 0.1, 9500);
 
 // Live reflections: a cube camera follows the car so the paint and glass mirror the real night scene
-const cubeRT = new THREE.WebGLCubeRenderTarget(256, { type: THREE.HalfFloatType, generateMipmaps: true, minFilter: THREE.LinearMipmapLinearFilter });
+const cubeRT = new THREE.WebGLCubeRenderTarget(256, { type: isWebGL2 ? THREE.HalfFloatType : THREE.UnsignedByteType, generateMipmaps: true, minFilter: THREE.LinearMipmapLinearFilter });
 const cubeCam = new THREE.CubeCamera(0.3, 4000, cubeRT);
 scene.add(cubeCam);
 setEnvMap(cubeRT.texture);
@@ -85,7 +92,7 @@ visual.setVersion(versionId);
 visual.doorsOpen = true;
 
 // MSAA render target so edges stay smooth with post-processing
-const composerRT = new THREE.WebGLRenderTarget(innerWidth, innerHeight, { type: THREE.HalfFloatType, samples: 4 });
+const composerRT = new THREE.WebGLRenderTarget(innerWidth, innerHeight, { type: isWebGL2 ? THREE.HalfFloatType : THREE.UnsignedByteType, samples: isWebGL2 ? 4 : 0 });
 const composer = new EffectComposer(renderer, composerRT);
 composer.addPass(new RenderPass(scene, camera));
 const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.5, 0.4, 1.0);
