@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>Roadster: McGregor Reveal</title>
+  <meta name="description" content="Juego de fans en tercera persona del nuevo Tesla Roadster (2026) en el sitio de pruebas de SpaceX en McGregor, Texas." />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2305070b'/%3E%3Cpath d='M10 40c6-10 16-14 26-14s14 4 18 10l-4 4H14z' fill='%23e0202f'/%3E%3Ccircle cx='20' cy='42' r='5' fill='%23eef2f6'/%3E%3Ccircle cx='46' cy='42' r='5' fill='%23eef2f6'/%3E%3C/svg%3E" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/style.css" />
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="app"></div>
+
+  <!-- Loading -->
+  <div id="loading" class="screen">
+    <div class="load-inner">
+      <div class="wordmark">ROADSTER</div>
+      <div class="load-bar"><span></span></div>
+      <p class="muted">Preparando el sitio de pruebas de McGregor…</p>
+    </div>
+  </div>
+
+  <!-- Main menu -->
+  <div id="menu" class="screen hidden">
+    <div class="menu-grid">
+      <section class="menu-main">
+        <p class="eyebrow">Presentación · 15 de octubre de 2026 · SpaceX McGregor, Texas</p>
+        <h1 class="wordmark big">ROADSTER</h1>
+        <p class="lede">Conduce el nuevo Roadster en el mismo lugar donde se presentó. Sube boca abajo por la rampa con el ventilador de succión, salta por encima de la fila de Teslas, haz el 0–60 en menos de un segundo y vuela con los propulsores de aire comprimido.</p>
+
+        <h2 class="label">Versión</h2>
+        <div id="versions" class="versions"></div>
+
+        <h2 class="label">Color</h2>
+        <div id="colors" class="colors"></div>
+
+        <div class="menu-actions">
+          <button id="start" class="btn-primary">Arrancar el Roadster</button>
+          <label class="quality">Calidad
+            <select id="quality">
+              <option value="high">Alta</option>
+              <option value="medium">Media</option>
+              <option value="low">Baja</option>
+            </select>
+          </label>
+        </div>
+        <p class="disclaimer">Juego de fans no oficial, sin relación con Tesla ni SpaceX. Las cifras vienen de la prensa sobre la presentación (oct. 2026) y pueden cambiar.</p>
+      </section>
+
+      <aside class="menu-info">
+        <div class="tabs" role="tablist">
+          <button class="tab active" data-tab="controls" role="tab">Controles</button>
+          <button class="tab" data-tab="specs" role="tab">Ficha técnica</button>
+          <button class="tab" data-tab="event" role="tab">La presentación</button>
+        </div>
+        <div class="tab-panel" id="tab-controls">
+          <table class="keys">
+            <tr><td><kbd>W</kbd><kbd>S</kbd></td><td>Acelerar · Frenar / marcha atrás</td></tr>
+            <tr><td><kbd>A</kbd><kbd>D</kbd></td><td>Girar (en el aire: alabeo / kickflip)</td></tr>
+            <tr><td><kbd>Espacio</kbd></td><td>Freno de mano · derrape</td></tr>
+            <tr><td><kbd>Shift</kbd></td><td>Impulso con propulsores de gas frío</td></tr>
+            <tr><td><kbd>Q</kbd></td><td>Salto con propulsores · mantener: elevación</td></tr>
+            <tr><td><kbd>E</kbd></td><td>Ventilador de succión (2G de carga aerodinámica)</td></tr>
+            <tr><td><kbd>F</kbd></td><td>Modo vuelo (solo Rocket)</td></tr>
+            <tr><td><kbd>X</kbd></td><td>Descender en vuelo</td></tr>
+            <tr><td><kbd>W</kbd><kbd>S</kbd> en el aire</td><td>Cabeceo (mortal adelante / atrás)</td></tr>
+            <tr><td><kbd>←</kbd><kbd>→</kbd> en el aire</td><td>Guiñada</td></tr>
+            <tr><td><kbd>L</kbd></td><td>Faros escamoteables</td></tr>
+            <tr><td><kbd>G</kbd></td><td>Quitar / poner techo de cristal</td></tr>
+            <tr><td><kbd>C</kbd></td><td>Cambiar cámara · arrastra el ratón para orbitar</td></tr>
+            <tr><td><kbd>H</kbd></td><td>Claxon</td></tr>
+            <tr><td><kbd>R</kbd></td><td>Reaparecer</td></tr>
+            <tr><td><kbd>U</kbd></td><td>Cambiar km/h ↔ mph</td></tr>
+            <tr><td><kbd>M</kbd> · <kbd>Esc</kbd></td><td>Silenciar · Pausa</td></tr>
+          </table>
+          <p class="muted small">Mando compatible: RT/LT acelerar/frenar, stick izquierdo dirección, A salto, B derrape, X succión, Y vuelo, RB impulso.</p>
+        </div>
+        <div class="tab-panel hidden" id="tab-specs">
+          <table class="spec">
+            <tr><th></th><th>Performance</th><th>Thrust</th><th>Rocket</th></tr>
+            <tr><td>0–60 mph</td><td>&lt; 1,6 s</td><td>&lt; 0,9 s</td><td>&lt; 0,59 s</td></tr>
+            <tr><td>Vel. máxima</td><td>214 mph</td><td>214 mph</td><td>230+ mph</td></tr>
+            <tr><td>Propulsores</td><td>—</td><td>Gas frío</td><td>10 toberas, 600 L</td></tr>
+            <tr><td>Vuelo</td><td>—</td><td>Saltos</td><td>Sí</td></tr>
+            <tr><td>Plazas</td><td>2+2</td><td>2+2</td><td>1</td></tr>
+            <tr><td>Reserva</td><td>50.000 $</td><td>250.000 $</td><td>Invitación</td></tr>
+          </table>
+          <ul class="facts">
+            <li>1.341 hp y más de 300 millas de autonomía (cifras publicadas).</li>
+            <li>Ventilador de succión bajo el coche: hasta 2G de carga aerodinámica, suficiente para circular boca abajo.</li>
+            <li>Propulsores de gas frío: no queman combustible, expulsan aire comprimido.</li>
+            <li>Techo de cristal desmontable, faros escamoteables, volante tipo yoke steer-by-wire.</li>
+            <li>Producción prevista para 2028. Precio final sin confirmar.</li>
+          </ul>
+        </div>
+        <div class="tab-panel hidden" id="tab-event">
+          <p>El 15 de octubre de 2026, de noche, Tesla presentó el Roadster en el sitio de pruebas de cohetes de SpaceX en McGregor (Texas), cerca de Waco.</p>
+          <ul class="facts">
+            <li>Escenario con una gran estructura en arco, humo, música, siseos mecánicos y cuenta atrás de lanzamiento.</li>
+            <li>El coche subió por una rampa curva gigante, pegado por la succión hasta quedar boca abajo, salió volando, giró 180° en el aire y aterrizó sobre sus ruedas.</li>
+            <li>En otra prueba saltó por encima de una fila de Teslas, incluidos un Cybertruck y un Semi.</li>
+            <li>Mostraron un 0–60 mph grabado en 0,81 s. Las acrobacias se hicieron sin nadie dentro.</li>
+          </ul>
+          <p class="muted small">En el juego encontrarás el escenario y el arco, la rampa invertida, la fila de Teslas, una pista de aceleración y los bancos de pruebas de cohetes con anillos de vuelo.</p>
+        </div>
+      </aside>
+    </div>
+  </div>
+
+  <!-- HUD -->
+  <div id="hud" class="hidden">
+    <div class="hud-tl panel">
+      <div class="hud-version"><span id="hud-version">Thrust</span><span id="hud-score" class="score">0 pts</span></div>
+      <ul id="challenges" class="challenges"></ul>
+    </div>
+    <div class="hud-tc">
+      <div id="msg" class="msg"></div>
+      <div id="submsg" class="submsg"></div>
+    </div>
+    <div class="hud-tr">
+      <canvas id="minimap" width="200" height="200"></canvas>
+    </div>
+    <div class="hud-bc">
+      <div id="timer" class="timer"></div>
+      <div class="speedo">
+        <div class="speed"><span id="speed">0</span><span id="unit" class="unit">km/h</span></div>
+        <div id="speed2" class="speed2">0 mph</div>
+        <div class="power"><span id="power"></span></div>
+      </div>
+    </div>
+    <div class="hud-br panel">
+      <div class="tank">
+        <div class="tank-head"><span>Aire</span><span id="tank-l">600 L</span></div>
+        <div class="tank-bar"><span id="tank"></span></div>
+      </div>
+      <div class="chips">
+        <span id="chip-suction" class="chip">Succión</span>
+        <span id="chip-flight" class="chip">Vuelo</span>
+        <span id="chip-lights" class="chip">Faros</span>
+        <span id="chip-cam" class="chip on">Cámara: cerca</span>
+      </div>
+    </div>
+    <div id="hint" class="hint hidden">Pulsa <kbd>I</kbd> para ver los controles</div>
+    <div id="help" class="help panel hidden"></div>
+  </div>
+
+  <div id="countdown" class="countdown hidden"></div>
+  <div id="intro-title" class="intro-title hidden">
+    <p class="eyebrow">En directo · SpaceX McGregor, Texas</p>
+    <div class="wordmark big">ROADSTER</div>
+  </div>
+
+  <!-- Pause -->
+  <div id="pause" class="screen hidden">
+    <div class="pause-box panel">
+      <h2>Pausa</h2>
+      <button id="resume" class="btn-primary">Continuar</button>
+      <button id="restart" class="btn">Reaparecer en el escenario</button>
+      <button id="tomenu" class="btn">Cambiar versión o color</button>
+    </div>
+  </div>
+
+  <!-- Touch controls -->
+  <div id="touch" class="touch hidden">
+    <div class="tl-group">
+      <button data-key="KeyA" class="tbtn">◀</button>
+      <button data-key="KeyD" class="tbtn">▶</button>
+    </div>
+    <div class="tr-group">
+      <button data-key="KeyE" class="tbtn small">Succión</button>
+      <button data-key="KeyF" class="tbtn small">Vuelo</button>
+      <button data-key="KeyQ" class="tbtn small">Salto</button>
+      <button data-key="ShiftLeft" class="tbtn small">Impulso</button>
+      <button data-key="Space" class="tbtn small">Derrape</button>
+      <button data-key="KeyS" class="tbtn">Freno</button>
+      <button data-key="KeyW" class="tbtn gas">Gas</button>
+    </div>
+  </div>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
