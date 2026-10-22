@@ -38,6 +38,13 @@ export function buildWorld(scene, quality) {
       uniforms: {},
       vertexShader: `varying vec3 vP; void main(){ vP = normalize(position); gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.0);}`,
       fragmentShader: `varying vec3 vP;
+        float hash3(vec3 p){ return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
+        float vnoise(vec3 p){
+          vec3 i = floor(p); vec3 f = fract(p); f = f*f*(3.0-2.0*f);
+          float n000 = hash3(i), n100 = hash3(i+vec3(1,0,0)), n010 = hash3(i+vec3(0,1,0)), n110 = hash3(i+vec3(1,1,0));
+          float n001 = hash3(i+vec3(0,0,1)), n101 = hash3(i+vec3(1,0,1)), n011 = hash3(i+vec3(0,1,1)), n111 = hash3(i+vec3(1,1,1));
+          return mix(mix(mix(n000,n100,f.x), mix(n010,n110,f.x), f.y), mix(mix(n001,n101,f.x), mix(n011,n111,f.x), f.y), f.z);
+        }
         void main(){
           float h = clamp(vP.y, -0.2, 1.0);
           vec3 top = vec3(0.005,0.01,0.035);
@@ -48,6 +55,14 @@ export function buildWorld(scene, quality) {
           // Waco city glow to the north-east
           float city = pow(max(0.0, dot(normalize(vec3(vP.x,0.0,vP.z)), normalize(vec3(0.5,0.0,0.85)))), 6.0) * (1.0 - smoothstep(0.0, 0.18, h));
           c += vec3(0.35,0.18,0.06) * city * 0.6;
+          // Milky Way band with dust lanes
+          vec3 bn = normalize(vec3(0.62, 0.35, -0.7));
+          float d = dot(vP, bn);
+          float band = exp(-d * d / 0.018);
+          float clouds = vnoise(vP * 9.0) * 0.6 + vnoise(vP * 23.0) * 0.3 + vnoise(vP * 60.0) * 0.1;
+          float dust = smoothstep(0.45, 0.7, vnoise(vP * 14.0 + 3.0));
+          float mw = band * smoothstep(0.3, 0.85, clouds) * (1.0 - dust * 0.7) * smoothstep(0.02, 0.25, h);
+          c += vec3(0.30, 0.29, 0.36) * mw * 0.32 + vec3(0.18, 0.14, 0.12) * band * 0.05 * smoothstep(0.02, 0.25, h);
           gl_FragColor = vec4(c, 1.0);
         }`,
     })
@@ -57,15 +72,45 @@ export function buildWorld(scene, quality) {
 
   const starGeo = new THREE.BufferGeometry();
   const sp = [];
-  for (let i = 0; i < 4000; i++) {
+  const sSize = [];
+  const sPhase = [];
+  const sCol = [];
+  const bandN = new THREE.Vector3(0.62, 0.35, -0.7).normalize();
+  const sv = new THREE.Vector3();
+  for (let i = 0; i < 7000; i++) {
     const th = Math.random() * Math.PI * 2;
     const y = Math.pow(Math.random(), 0.7);
     const r = Math.sqrt(1 - y * y);
-    sp.push(Math.cos(th) * r * 4000, y * 4000 + 80, Math.sin(th) * r * 4000);
+    sv.set(Math.cos(th) * r, y, Math.sin(th) * r);
+    // keep extra stars only near the Milky Way band
+    if (i > 3500 && Math.abs(sv.dot(bandN)) > 0.12) continue;
+    sp.push(sv.x * 4000, sv.y * 4000 + 80, sv.z * 4000);
+    const big = Math.random() < 0.04;
+    sSize.push(big ? rand(3.5, 5.5) : rand(1.2, 2.8));
+    sPhase.push(Math.random() * 6.28);
+    const t = Math.random();
+    sCol.push(t < 0.15 ? 1.0 : 0.85, t < 0.15 ? 0.85 : 0.9, t > 0.85 ? 0.75 : 1.0);
   }
   starGeo.setAttribute('position', new THREE.Float32BufferAttribute(sp, 3));
-  const stars = new THREE.Points(starGeo, new THREE.PointsMaterial({ color: 0xffffff, size: 3, sizeAttenuation: false, fog: false, transparent: true, opacity: 0.8, map: glowTexture(), depthWrite: false }));
+  starGeo.setAttribute('aSize', new THREE.Float32BufferAttribute(sSize, 1));
+  starGeo.setAttribute('aPhase', new THREE.Float32BufferAttribute(sPhase, 1));
+  starGeo.setAttribute('aCol', new THREE.Float32BufferAttribute(sCol, 3));
+  const starMat = new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    fog: false,
+    blending: THREE.AdditiveBlending,
+    uniforms: { uTime: { value: 0 }, uPR: { value: Math.min(devicePixelRatio, 2) } },
+    vertexShader: `attribute float aSize; attribute float aPhase; attribute vec3 aCol; uniform float uTime; uniform float uPR; varying float vA; varying vec3 vC;
+      void main(){ vC = aCol; vA = 0.65 + 0.35 * sin(uTime * (1.5 + fract(aPhase) * 2.0) + aPhase * 7.0);
+        gl_PointSize = aSize * uPR; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+    fragmentShader: `varying float vA; varying vec3 vC;
+      void main(){ vec2 p = gl_PointCoord - 0.5; float d = length(p); float a = smoothstep(0.5, 0.0, d); a = a * a * vA; gl_FragColor = vec4(vC * a, a); }`,
+  });
+  const stars = new THREE.Points(starGeo, starMat);
+  stars.renderOrder = -9;
   scene.add(stars);
+  animated.push((t) => (starMat.uniforms.uTime.value = t));
   const moon = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTexture('rgba(235,240,255,1)', 'rgba(120,150,255,0)'), fog: false, depthWrite: false }));
   moon.position.set(-1600, 1500, -2600);
   moon.scale.setScalar(380);
@@ -120,6 +165,26 @@ export function buildWorld(scene, quality) {
   pad.position.set(30, 0.01, 20);
   pad.receiveShadow = true;
   scene.add(pad);
+
+  // tyre marks from launches and practice runs
+  const skidTex = canvasTexture(128, 512, (ctx, w, h) => {
+    ctx.clearRect(0, 0, w, h);
+    for (const x of [30, 98]) {
+      for (let y = 0; y < h; y += 2) {
+        const a = 0.55 * Math.min(1, y / 120) * (0.6 + Math.random() * 0.4);
+        ctx.fillStyle = `rgba(8,8,8,${a})`;
+        ctx.fillRect(x - 9 + Math.sin(y * 0.02) * 2, y, 18, 2);
+      }
+    }
+  });
+  const skidMat = new THREE.MeshBasicMaterial({ map: skidTex, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -6, polygonOffsetUnits: -6 });
+  for (const [x, z, len, rot] of [[0, 55, 22, 0], [1.2, 30, 18, 0.05], [-1, -30, 14, -0.04], [92, -20, 20, 0], [-112, -36, 30, 0], [-110.5, -30, 24, 0.02]]) {
+    const sk = new THREE.Mesh(new THREE.PlaneGeometry(1.9, len), skidMat);
+    sk.rotation.x = -Math.PI / 2;
+    sk.rotation.z = rot;
+    sk.position.set(x, 0.035, z);
+    scene.add(sk);
+  }
 
   // road links from pad to drag strip and test stands
   const asphaltTex = canvasTexture(256, 256, (ctx, w, h) => noiseFill(ctx, w, h, '#2a2b2e', 0.2, 20000, 1.5), { repeat: [4, 200] });
@@ -366,6 +431,8 @@ export function buildWorld(scene, quality) {
   const loopMat = new THREE.MeshStandardMaterial({ map: chevron, emissiveMap: chevron, emissive: 0xffffff, emissiveIntensity: 0.35, roughness: 0.5, metalness: 0.6, side: THREE.DoubleSide });
   const loopSurf = new THREE.Mesh(ribbonGeometry(loopFn, 96, L.W), loopMat);
   loopSurf.userData.surface = 'loop';
+  loopSurf.userData.smooth = true;
+  loopSurf.userData.curvature = 1 / L.R;
   loopSurf.receiveShadow = true;
   scene.add(loopSurf);
   drivable.push(loopSurf);
@@ -376,14 +443,14 @@ export function buildWorld(scene, quality) {
   for (const s of [-1, 1]) {
     const sideFn = (t) => {
       const r = loopFn(t);
-      return { p: r.p.clone().addScaledVector(r.side, s * (L.W / 2 + 0.2)).addScaledVector(r.n, -0.22), n: r.side, side: r.n };
+      return { p: r.p.clone().addScaledVector(r.side, s * (L.W / 2 + 0.2)).addScaledVector(r.n, 0.3), n: r.side, side: r.n };
     };
-    scene.add(new THREE.Mesh(ribbonGeometry(sideFn, 96, 0.45), shellMat));
+    scene.add(new THREE.Mesh(ribbonGeometry(sideFn, 96, 1.5), shellMat));
     // glowing rails
     const pts = [];
     for (let i = 0; i <= 64; i++) {
       const r = loopFn(i / 64);
-      pts.push(r.p.clone().addScaledVector(r.side, s * (L.W / 2 + 0.1)).addScaledVector(r.n, 0.35));
+      pts.push(r.p.clone().addScaledVector(r.side, s * (L.W / 2 + 0.1)).addScaledVector(r.n, 1.05));
     }
     const rail = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 128, 0.12, 8), new THREE.MeshStandardMaterial({ color: 0x002030, emissive: 0x30d5ff, emissiveIntensity: 2.2 }));
     scene.add(rail);

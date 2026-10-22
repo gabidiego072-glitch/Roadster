@@ -3,7 +3,7 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { buildWorld, LAYOUT } from './world.js';
 import { CarVisual, COLORS, setEnvMap } from './car.js';
 import { Vehicle, VERSIONS, MS_TO_MPH } from './physics.js';
@@ -48,8 +48,25 @@ const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(0x080b16, 0.0011);
 const camera = new THREE.PerspectiveCamera(62, innerWidth / innerHeight, 0.1, 9500);
 
-const pmrem = new THREE.PMREMGenerator(renderer);
-setEnvMap(pmrem.fromScene(new RoomEnvironment(), 0.04).texture);
+// Live reflections: a cube camera follows the car so the paint and glass mirror the real night scene
+const cubeRT = new THREE.WebGLCubeRenderTarget(256, { type: THREE.HalfFloatType, generateMipmaps: true, minFilter: THREE.LinearMipmapLinearFilter });
+const cubeCam = new THREE.CubeCamera(0.3, 4000, cubeRT);
+scene.add(cubeCam);
+setEnvMap(cubeRT.texture);
+let cubeFrame = 0;
+function updateReflections(force) {
+  const every = quality === 'high' ? 3 : quality === 'medium' ? 8 : 30;
+  if (!force && cubeFrame++ % every) return;
+  visual.m.group.visible = false;
+  smoke.points.visible = glow.points.visible = false;
+  const auto = renderer.shadowMap.autoUpdate;
+  renderer.shadowMap.autoUpdate = false;
+  cubeCam.position.copy(visual.m.group.position).add(new THREE.Vector3(0, 0.9, 0));
+  cubeCam.update(renderer, scene);
+  renderer.shadowMap.autoUpdate = auto;
+  visual.m.group.visible = true;
+  smoke.points.visible = glow.points.visible = true;
+}
 
 const world = buildWorld(scene, isTouch ? 'low' : 'high');
 const vehicleWorld = {
@@ -58,6 +75,7 @@ const vehicleWorld = {
   spawn: LAYOUT.spawn,
   refill: LAYOUT.refill,
   lineup: { x: LAYOUT.lineup.x, z1: LAYOUT.lineup.z1, z2: LAYOUT.lineup.z2 },
+  loop: LAYOUT.loop,
 };
 const car = new Vehicle(vehicleWorld);
 const carColor = () => (COLORS.find((c) => c.id === colorId) || COLORS[0]).hex;
@@ -66,10 +84,29 @@ car.setVersion(versionId);
 visual.setVersion(versionId);
 visual.doorsOpen = true;
 
-const composer = new EffectComposer(renderer);
+// MSAA render target so edges stay smooth with post-processing
+const composerRT = new THREE.WebGLRenderTarget(innerWidth, innerHeight, { type: THREE.HalfFloatType, samples: 4 });
+const composer = new EffectComposer(renderer, composerRT);
 composer.addPass(new RenderPass(scene, camera));
 const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.5, 0.4, 1.0);
 composer.addPass(bloom);
+// cinematic finish: soft vignette, slight cool grade and fine film grain
+const finish = new ShaderPass({
+  uniforms: { tDiffuse: { value: null }, uTime: { value: 0 } },
+  vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  fragmentShader: `uniform sampler2D tDiffuse; uniform float uTime; varying vec2 vUv;
+    float hash(vec2 p){ return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+    void main(){
+      vec4 c = texture2D(tDiffuse, vUv);
+      vec2 d = vUv - 0.5;
+      float vig = smoothstep(0.85, 0.25, length(d * vec2(1.15, 1.0)));
+      c.rgb *= mix(0.55, 1.0, vig);
+      c.rgb = mix(c.rgb, c.rgb * vec3(0.94, 0.98, 1.06), 0.6);
+      c.rgb += (hash(vUv * 900.0 + uTime) - 0.5) * 0.018;
+      gl_FragColor = c;
+    }`,
+});
+composer.addPass(finish);
 composer.addPass(new OutputPass());
 
 function applyQuality() {
@@ -655,6 +692,13 @@ function handleEvents() {
           invertedFlag = time;
         }
         break;
+      case 'autoSuction':
+        showSub('Succión activada: el coche se pega a la rampa (2G)', 2.2);
+        break;
+      case 'loopExit':
+        showMsg('¡GIRA! A / D', 1.8);
+        showSub('Haz el kickflip de 180° para caer sobre las ruedas', 2.2);
+        break;
       case 'tankEmpty':
         showSub('Depósito de aire vacío: vuelve a la zona de recarga', 3);
         break;
@@ -917,6 +961,8 @@ function frame() {
 
   const mph = car.speed * MS_TO_MPH;
   world.update(time, dt, mph, screenMessageT > time ? { message: screenMessage } : null);
+  finish.uniforms.uTime.value = time % 100;
+  updateReflections(false);
   smoke.update(dt, renderer.domElement.height);
   glow.update(dt, renderer.domElement.height);
   if (quality === 'low') renderer.render(scene, camera);

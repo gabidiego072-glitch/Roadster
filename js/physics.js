@@ -47,6 +47,13 @@ const v1 = new THREE.Vector3();
 const v2 = new THREE.Vector3();
 const q1 = new THREE.Quaternion();
 const ray = new THREE.Raycaster();
+const pa = new THREE.Vector3();
+const pb = new THREE.Vector3();
+const pc = new THREE.Vector3();
+const na = new THREE.Vector3();
+const nb = new THREE.Vector3();
+const nc = new THREE.Vector3();
+const pl = new THREE.Vector3();
 
 export class Vehicle {
   constructor(world) {
@@ -121,9 +128,27 @@ export class Vehicle {
     const hits = ray.intersectObjects(this.world.drivable, false);
     if (!hits.length) return null;
     const h = hits[0];
-    const n = h.face.normal.clone().transformDirection(h.object.matrixWorld);
+    const obj = h.object;
+    let n;
+    if (obj.userData.smooth) {
+      // curved surfaces: interpolate vertex normals so the car follows the curve smoothly
+      const pos = obj.geometry.attributes.position;
+      const nor = obj.geometry.attributes.normal;
+      const f = h.face;
+      pa.fromBufferAttribute(pos, f.a);
+      pb.fromBufferAttribute(pos, f.b);
+      pc.fromBufferAttribute(pos, f.c);
+      na.fromBufferAttribute(nor, f.a);
+      nb.fromBufferAttribute(nor, f.b);
+      nc.fromBufferAttribute(nor, f.c);
+      pl.copy(h.point);
+      obj.worldToLocal(pl);
+      n = THREE.Triangle.getInterpolation(pl, pa, pb, pc, na, nb, nc, new THREE.Vector3()).normalize().transformDirection(obj.matrixWorld);
+    } else {
+      n = h.face.normal.clone().transformDirection(obj.matrixWorld);
+    }
     if (n.dot(dir) > 0) n.negate();
-    return { point: h.point, normal: n, distance: h.distance, surface: h.object.userData.surface || 'ground' };
+    return { point: h.point, normal: n, distance: h.distance, surface: obj.userData.surface || 'ground', curvature: obj.userData.curvature };
   }
 
   toggleSuction() {
@@ -175,6 +200,7 @@ export class Vehicle {
       invertedAtExit: this.up.y < -0.5,
       overLineup: false,
     };
+    if (this.air.fromLoop && this.air.invertedAtExit) this.events.push({ type: 'loopExit' });
   }
 
   crash(reason) {
@@ -288,7 +314,7 @@ export class Vehicle {
     const absF = Math.abs(vF);
     this.steerScale = THREE.MathUtils.lerp(1, 0.14, THREE.MathUtils.clamp(absF / 70, 0, 1));
     const angle = c.steer * 0.55 * this.steerScale;
-    let yawRate = (vF * Math.tan(angle)) / 2.7;
+    let yawRate = (vF * Math.tan(angle * (this.surface === 'loop' ? 0.3 : 1))) / 2.7;
     const grip = G * (1.35 + (this.suction ? 2 : 0));
     const maxYaw = grip / Math.max(absF, 1);
     if (c.handbrake && absF > 4) yawRate = yawRate * 1.35 + c.steer * 0.5 * Math.sign(vF);
@@ -317,7 +343,8 @@ export class Vehicle {
     const nn = hit.normal;
     const ds = this.vel.length() * h;
     let k = 0;
-    if (ds > 1e-4) {
+    if (hit.curvature !== undefined) k = hit.curvature;
+    else if (ds > 1e-4) {
       v1.copy(nn).sub(this.prevNormal);
       v2.copy(this.vel).normalize();
       k = -v1.dot(v2) / ds;
@@ -328,10 +355,6 @@ export class Vehicle {
       this.leaveGround();
       return;
     }
-    // A steep step up (wall) is not driveable: treat as obstacle
-    if (nn.dot(this.normal) < 0.75 && hit.surface === 'ground' && this.surface !== 'ground') {
-      // dropping back to flat ground from a ramp
-    }
     this.pos.copy(hit.point);
     this.vel.addScaledVector(nn, -this.vel.dot(nn));
     q1.setFromUnitVectors(this.up, nn);
@@ -339,7 +362,32 @@ export class Vehicle {
     this.prevNormal.copy(nn);
     this.normal.copy(nn);
     this.surface = hit.surface;
-    if (this.surface === 'loop' && this.up.y < -0.85) this.events.push({ type: 'inverted' });
+    if (this.surface === 'loop') this.loopAssist(h);
+  }
+
+  // On the inverted ramp: engage suction like in the reveal demo, keep the car centred and pointing along the ramp.
+  loopAssist(h) {
+    const L = this.world.loop;
+    if (!L) return;
+    if (!this.suction) {
+      this.suction = true;
+      this.events.push({ type: 'autoSuction' });
+    }
+    if (this.up.y < -0.85) this.events.push({ type: 'inverted' });
+    const lim = L.W / 2 - 1.15;
+    const dx = this.pos.x - L.x;
+    if (Math.abs(dx) > lim) {
+      this.pos.x = L.x + Math.sign(dx) * lim;
+      if (this.vel.x * Math.sign(dx) > 0) this.vel.x *= -0.2;
+    }
+    this.basis();
+    // yaw error: forward should have no sideways (X) component
+    const err = Math.asin(THREE.MathUtils.clamp(this.fwd.x, -1, 1)) * Math.sign(this.left.x || 1);
+    const fix = -err * Math.min(1, 4 * h);
+    q1.setFromAxisAngle(this.up, fix);
+    this.quat.premultiply(q1).normalize();
+    this.vel.applyAxisAngle(this.up, fix);
+    this.vel.x *= Math.exp(-3 * h);
   }
 
   airStep(h, c) {
@@ -404,6 +452,7 @@ export class Vehicle {
       this.angVel.y += inYaw * auth * 0.6 * h;
       const damp = inPitch || inRoll || inYaw ? 0.6 : 2.5;
       this.angVel.multiplyScalar(Math.exp(-damp * h));
+      this.angVel.clampScalar(-4.5, 4.5);
       if (hasAir && (inPitch || inRoll || inYaw)) {
         this.tank = Math.max(0, this.tank - h * 0.035);
         this.fx.roll = inRoll;
@@ -414,6 +463,17 @@ export class Vehicle {
       air.roll += this.angVel.z * h;
       air.pitch += this.angVel.x * h;
       air.yaw += this.angVel.y * h;
+      // landing assist: close to the ground and no rotation input -> level the car out (not counted as a trick)
+      if (!inPitch && !inRoll && !inYaw && this.vel.y < 0) {
+        const below = this.probe(v1.copy(this.pos).add(new THREE.Vector3(0, 1, 0)), new THREE.Vector3(0, -1, 0), 10);
+        if (below && below.distance < 9) {
+          v2.set(this.fwd.x, 0, this.fwd.z);
+          if (v2.lengthSq() < 0.01) v2.set(-this.up.x, 0, -this.up.z);
+          q1.setFromAxisAngle(UP, Math.atan2(v2.x, v2.z));
+          this.quat.slerp(q1, 1 - Math.exp(-2.6 * h));
+          this.angVel.multiplyScalar(Math.exp(-4 * h));
+        }
+      }
     }
 
     this.pos.addScaledVector(this.vel, h);
@@ -425,7 +485,7 @@ export class Vehicle {
     const hit = this.probe(origin, new THREE.Vector3(0, -1, 0), 1.5 + 0.7 + Math.max(0, -this.vel.y) * h);
     if (hit && hit.distance - 1.5 <= 0.62 && this.vel.dot(hit.normal) < 0.5) {
       const upDot = this.up.dot(hit.normal);
-      if (upDot > 0.35 || (this.flight && upDot > 0)) this.land(hit);
+      if (upDot > 0.2 || (this.flight && upDot > 0)) this.land(hit);
       else this.crash('aterrizaje');
     }
   }

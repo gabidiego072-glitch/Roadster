@@ -22,7 +22,7 @@ function paint(hex, extra = {}) {
     clearcoat: 1,
     clearcoatRoughness: 0.06,
     envMap,
-    envMapIntensity: 0.9,
+    envMapIntensity: 1.5,
     ...extra,
   });
 }
@@ -391,6 +391,17 @@ export function buildRoadster(colorHex) {
     body.add(led);
   }
 
+  // soft contact shadow so the car sits on the ground
+  const aoTex = glowTexture('rgba(0,0,0,1)', 'rgba(0,0,0,0)');
+  const contact = new THREE.Mesh(
+    new THREE.PlaneGeometry(2.6, 5.4),
+    new THREE.MeshBasicMaterial({ map: aoTex, transparent: true, opacity: 0.75, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -8, polygonOffsetUnits: -8 })
+  );
+  contact.rotation.x = -Math.PI / 2;
+  contact.position.y = 0.02;
+  contact.renderOrder = 1;
+  group.add(contact);
+
   // underbody suction fan glow
   const fanTex = glowTexture('rgba(90,220,255,1)', 'rgba(0,120,255,0)');
   const fanGlow = new THREE.Mesh(
@@ -439,7 +450,7 @@ export function buildRoadster(colorHex) {
   badge.rotation.y = Math.PI;
   body.add(badge);
 
-  return { group, body, bodyMat, wheels, frontBar: lightWhite, plumes, fanGlow, ledMat, fanLight, beam, rearMat, roof, tailLight, wing, doors };
+  return { group, body, bodyMat, wheels, contact, frontBar: lightWhite, plumes, fanGlow, ledMat, fanLight, beam, rearMat, roof, tailLight, wing, doors };
 }
 
 function badgeTexture() {
@@ -546,6 +557,7 @@ export class CarVisual {
       p.plume.scale.set(1, Math.max(0.01, Math.min(1, a) * 0.8), 1);
     }
 
+    this.m.contact.material.opacity += ((car.grounded ? 0.75 : 0) - this.m.contact.material.opacity) * (1 - Math.exp(-12 * dt));
     const s = car.suction ? 1 : 0;
     const pulse = 0.85 + Math.sin(this.t * 30) * 0.15;
     this.m.fanGlow.material.opacity += (s * 0.9 * pulse - this.m.fanGlow.material.opacity) * (1 - Math.exp(-10 * dt));
