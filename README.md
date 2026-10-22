@@ -4,7 +4,7 @@ Juego 3D en tercera persona del nuevo **Tesla Roadster** (presentado el 15 de oc
 
 > Juego de fans no oficial, sin relación con Tesla ni SpaceX. Las cifras vienen de la prensa sobre la presentación y pueden cambiar.
 
-![Intro en el escenario](docs/intro.png)
+![El Roadster](docs/intro.png)
 
 ## Cómo jugar
 
@@ -25,8 +25,9 @@ No hace falta instalar nada. Es una página web estática (HTML + JavaScript con
 | Control en el aire | `A` `D` / `W` `S` / `←` `→` | Alabeo (kickflip), cabeceo (mortales) y guiñada |
 | Modo vuelo (solo Rocket) | `F`, `Q` subir, `X` bajar | Despega, flota y vuela con los propulsores |
 | Freno de mano / derrape | `Espacio` | |
-| Faros escamoteables | `L` | Se levantan y encienden |
-| Techo de cristal desmontable | `G` | |
+| Faros | `L` | Ocultos en la barra de luz delantera |
+| Puertas de mariposa | `O` | Se abren hacia arriba con el coche parado |
+| Panel del techo de cristal | `G` | Quitar / poner |
 | Cámaras en tercera persona | `C` | Cerca, lejos y cine (cámaras de retransmisión). Arrastra el ratón para orbitar |
 | Otros | `H` claxon · `R` reaparecer · `U` km/h↔mph · `M` silencio · `Esc` pausa · `I` ayuda | |
 
@@ -57,13 +58,13 @@ También funciona con **mando** (RT/LT, stick, A salto, B derrape, X succión, Y
 | | |
 |---|---|
 | ![Rampa invertida](docs/rampa.png) | ![Modo vuelo](docs/vuelo.png) |
-| ![Escenario y público](docs/escenario.png) | ![Menú](docs/menu.png) |
+| ![Escenario y público](docs/escenario.png) | ![Puertas de mariposa y alerón (Rocket)](docs/puertas.png) |
 
 ## Lo que se sabe del nuevo Roadster (investigación, oct. 2026)
 - **Presentación:** 15 de octubre de 2026, de noche, en el sitio de pruebas de SpaceX en McGregor (cerca de Waco, Texas). Hubo arco escénico, humo, música, siseos mecánicos y cuenta atrás.
 - **Demos:** subió por una rampa curva gigante pegado por la succión hasta quedar invertido, salió volando, giró 180° con los propulsores y aterrizó. En otra prueba saltó una fila de Teslas, incluidos un Cybertruck y un Semi. Las acrobacias se hicieron sin nadie dentro.
 - **Prestaciones:** se mostró un 0–60 mph grabado en 0,81 s (sin verificar de forma independiente). 1.341 hp y más de 300 millas de autonomía según las cifras publicadas.
-- **Tecnología:** ventilador bajo el coche con hasta 2G de carga, propulsores de gas frío (aire comprimido, no queman combustible), techo de cristal desmontable, faros escamoteables y yoke steer-by-wire.
+- **Tecnología:** ventilador bajo el coche con hasta 2G de carga, propulsores de gas frío (aire comprimido, no queman combustible), carrocería angulosa de caras planas, techo de cristal tintado de una pieza, barra de luz delantera, puertas de mariposa, llantas de 6 radios, yoke steer-by-wire y, en el Rocket, alerón trasero y batería de toberas.
 - **Producción:** prevista para 2028. Precio final sin confirmar; el sistema de vuelo del Rocket no está aprobado para vías públicas.
 
 Fuentes: [CNBC](https://www.cnbc.com/2026/10/15/tesla-roadster-reveal-what-to-know-about-the-delayed-ev.html) · [Fox News](https://www.foxnews.com/tech/tesla-roadster-flies-flips-hits-60-mph-flash) · [Fox Business](https://www.foxbusiness.com/technology/teslas-new-roadster-makes-flying-debut-hitting-60-mph-under-second) · [Deseret News](https://www.deseret.com/business/2026/10/16/new-tesla-roadster-flies-several-meters-in-the-air-at-texas-exhibition) · [InsideEVs (demo)](https://insideevs.com/news/812151/2027-tesla-roadster-price-specs-release-date/) · [InsideEVs (ficha)](https://insideevs.com/news/812242/tesla-roadster-2026-specs/) · [Motor1](https://www.motor1.com/news/812195/tesla-roadster-stunt-2028-production/) · [The Next Web](https://thenextweb.com/news/tesla-roadster-reveal-thrusters-2028) · [CarBuzz](https://carbuzz.com/new-tesla-roadster-debut-features-specs/) · [Click2Houston](https://click2houston.com/news/local/2026/10/16/tesla-unveils-new-roadster-with-rocket-style-thrusters-targets-2028-production) · [Tech Insider](https://tech-insider.org/tesla-roadster-tricks-stunts-explained-2026/)

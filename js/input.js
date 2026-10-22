@@ -62,6 +62,7 @@ export class Input {
       suction: e('KeyE'),
       flight: e('KeyF'),
       lights: e('KeyL'),
+      doors: e('KeyO'),
       camera: e('KeyC'),
       reset: e('KeyR'),
       horn: k('KeyH'),

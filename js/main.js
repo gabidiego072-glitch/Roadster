@@ -32,7 +32,7 @@ const store = {
 const isTouch = matchMedia('(pointer: coarse)').matches;
 let quality = store.get('quality', isTouch ? 'low' : 'high');
 let versionId = store.get('version', 'thrust');
-let colorId = store.get('color', 'red');
+let colorId = store.get('color2', 'white');
 let useKmh = store.get('kmh', true);
 
 // ---------------- Renderer / scene ----------------
@@ -63,6 +63,8 @@ const car = new Vehicle(vehicleWorld);
 const carColor = () => (COLORS.find((c) => c.id === colorId) || COLORS[0]).hex;
 const visual = new CarVisual(scene, carColor());
 car.setVersion(versionId);
+visual.setVersion(versionId);
+visual.doorsOpen = true;
 
 const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
@@ -149,6 +151,7 @@ function buildMenu() {
     b.onclick = () => {
       versionId = v.id;
       store.set('version', versionId);
+      visual.setVersion(versionId);
       buildMenu();
     };
     vEl.appendChild(b);
@@ -163,7 +166,7 @@ function buildMenu() {
     s.setAttribute('aria-label', c.name);
     s.onclick = () => {
       colorId = c.id;
-      store.set('color', colorId);
+      store.set('color2', colorId);
       visual.setColor(c.hex);
       buildMenu();
     };
@@ -213,6 +216,8 @@ function startGame() {
   car.setVersion(versionId);
   car.reset(LAYOUT.spawn.pos, LAYOUT.spawn.yaw);
   visual.setColor(carColor());
+  visual.setVersion(versionId);
+  visual.doorsOpen = false;
   done = store.get('done.' + versionId, {});
   best = store.get('best.' + versionId, {});
   nextRing = 0;
@@ -827,6 +832,10 @@ function controls(ctl) {
     else showSub(r === 'on' ? 'MODO VUELO · Q subir · X bajar · W/S avanzar' : 'Modo vuelo desactivado', 2);
   }
   if (ctl.lights) visual.lights = !visual.lights;
+  if (ctl.doors) {
+    if (car.speed < 2 && car.grounded) showSub(visual.toggleDoors() ? 'Puertas de mariposa abiertas' : 'Puertas cerradas', 1.4);
+    else showSub('Para el coche para abrir las puertas', 1.4);
+  }
   if (ctl.roof) showSub(visual.toggleRoof() ? 'Techo de cristal colocado' : 'Techo de cristal desmontado', 1.5);
   if (ctl.camera) camMode = (camMode + 1) % 3;
   if (ctl.reset) {
@@ -861,7 +870,8 @@ function frame() {
     updateTimers(dt, ctl);
     visual.update(dt, car, ctl);
     emitEffects(dt, ctl);
-    updateCamera(dt);
+    if (debug.cam) debug.cam(camera);
+    else updateCamera(dt);
     updateHUD(ctl);
     drawMinimap();
     const crowdNear = THREE.MathUtils.clamp(1 - car.pos.distanceTo(new THREE.Vector3(0, 0, -20)) / 120, 0, 1);
