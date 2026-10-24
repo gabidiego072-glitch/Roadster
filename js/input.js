@@ -63,6 +63,7 @@ export class Input {
       flight: e('KeyF'),
       lights: e('KeyL'),
       doors: e('KeyO'),
+      assists: e('KeyK'),
       camera: e('KeyC'),
       reset: e('KeyR'),
       horn: k('KeyH'),
@@ -105,7 +106,8 @@ export class Input {
     }
 
     // smooth keyboard steering
-    const rate = steerTarget === 0 ? 7 : 4.5;
+    // light smoothing only: the car model applies its own speed-dependent steering response
+    const rate = steerTarget === 0 ? 16 : 12;
     this.steer += (steerTarget - this.steer) * (1 - Math.exp(-rate * dt));
     if (Math.abs(this.steer) < 0.001) this.steer = 0;
 

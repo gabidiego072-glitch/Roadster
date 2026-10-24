@@ -127,7 +127,8 @@ export class GameAudio {
     this.set(this.fanGain.gain, car.suction ? 0.12 : 0);
     this.set(this.windGain.gain, Math.min(0.3, car.speed * 0.003));
     this.set(this.windLp.frequency, 300 + car.speed * 25);
-    this.set(this.screechGain.gain, car.grounded && car.drifting ? 0.12 : 0);
+    const slip = Math.min(1, Math.max(car.tireSlipR || 0, car.tireSlipF || 0) * 3);
+    this.set(this.screechGain.gain, car.grounded && (car.skidding || car.drifting) ? 0.04 + slip * 0.12 : 0, 0.04);
     this.set(this.crowdGain.gain, 0.01 + crowdNear * 0.05 + (cheer ? 0.25 : 0), 0.3);
     this.set(this.hornGain.gain, ctl.horn ? 0.5 : 0, 0.01);
   }

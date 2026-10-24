@@ -26,7 +26,8 @@ Otras opciones:
 | Salto con propulsores | `Q` | Salto vertical; mantenido en el aire: elevación |
 | Control en el aire | `A` `D` / `W` `S` / `←` `→` | Alabeo (kickflip), cabeceo (mortales) y guiñada |
 | Modo vuelo (solo Rocket) | `F`, `Q` subir, `X` bajar | Despega, flota y vuela con los propulsores |
-| Freno de mano / derrape | `Espacio` | |
+| Freno de mano / derrape | `Espacio` | Un toque inicia el derrape; con gas se mantiene, girando abres o cierras el ángulo y soltando el gas recuperas |
+| Ayudas de conducción | `K` | Control de estabilidad y derrape asistido (activadas por defecto) |
 | Faros | `L` | Ocultos en la barra de luz delantera |
 | Puertas de mariposa | `O` | Se abren hacia arriba con el coche parado |
 | Panel del techo de cristal | `G` | Quitar / poner |
@@ -54,13 +55,28 @@ También funciona con **mando** (RT/LT, stick, A salto, B derrape, X succión, Y
 - **Bancos de pruebas de cohetes** con motores Raptor que hacen encendidos estáticos, un Starship iluminado y **anillos de vuelo** para la versión Rocket.
 - **Zona de recarga de aire comprimido.**
 
+### Conducción
+La física usa un modelo de neumáticos real (modelo de bicicleta con curva tipo Pacejka): agarre que depende de la carga, transferencia de peso al acelerar y frenar, elipse de fricción (acelerar en curva reduce el agarre lateral) y dirección que se adapta a la velocidad. Unos datos medidos en el propio juego:
+- Agarre en curva: **1,2 G**, y **3,6 G con la succión**.
+- Respuesta de la dirección: **0,17 s**, sin oscilaciones; no trompea al levantar el pie en curva ni en eslalon.
+- Frenada de 108 a 0 km/h en **2,1 s**.
+- Derrapes sostenidos con gas, que terminan al soltar o contravolantear.
+
+### Gráficos
+- Carrocería con superficies lisas y aristas nítidas, cristal y pintura con **reflejos en tiempo real** del entorno, llantas de 6 radios con discos perforados y rotulación en los neumáticos.
+- Suelo, hormigón y asfalto con relieve, charcos que reflejan los focos, **marcas de neumático** dinámicas y humo.
+- Hangares, depósitos, pantallas LED gigantes, carpas de prensa, grúa de cámara, farolas, luces de Waco en el horizonte, Vía Láctea y luna.
+- Calidades **Baja / Media / Alta / Ultra**, con resolución adaptativa para mantener la fluidez.
+- Filtro anti-píxeles inválidos antes del efecto de resplandor: evita los **pantallazos negros**. Si la tarjeta gráfica se reinicia, el juego espera y se recupera.
+
 ### Retos
 0–60 por debajo del objetivo de tu versión · rampa invertida con aterrizaje · kickflip · saltar la fila · derrape de 3 s · superar 200 mph · atravesar los 6 anillos volando (Rocket). Los récords se guardan en el navegador.
 
 | | |
 |---|---|
 | ![Rampa invertida](docs/rampa.png) | ![Modo vuelo](docs/vuelo.png) |
-| ![Escenario y público](docs/escenario.png) | ![Puertas de mariposa y alerón (Rocket)](docs/puertas.png) |
+| ![Pista de aceleración de noche](docs/escenario.png) | ![Puertas de mariposa y alerón (Rocket)](docs/puertas.png) |
+| ![Derrape con marcas de neumático](docs/derrape.png) | ![Menú](docs/menu.png) |
 
 ## Lo que se sabe del nuevo Roadster (investigación, oct. 2026)
 - **Presentación:** 15 de octubre de 2026, de noche, en el sitio de pruebas de SpaceX en McGregor (cerca de Waco, Texas). Hubo arco escénico, humo, música, siseos mecánicos y cuenta atrás.
@@ -82,5 +98,9 @@ js/physics.js     física: conducción, succión, propulsores, saltos y vuelo
 js/input.js       teclado, mando y táctil
 js/audio.js       sonido generado (motor eléctrico, propulsores, público)
 js/particles.js   humo, vapor de los propulsores, chispas y fuegos artificiales
+js/skidmarks.js   marcas de neumático
+js/shape.js       geometría de la carrocería (superficies lisas con aristas)
+js/textures.js    texturas generadas (relieve del suelo, hormigón, neumáticos…)
 js/geom.js        utilidades de geometría y texturas
+tools/build.mjs   genera dist/Roadster.html (archivo único)
 ```

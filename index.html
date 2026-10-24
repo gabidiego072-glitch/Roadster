@@ -76,12 +76,16 @@
           <button id="start" class="btn-primary">Arrancar el Roadster</button>
           <label class="quality">Calidad
             <select id="quality">
+              <option value="ultra">Ultra</option>
               <option value="high">Alta</option>
               <option value="medium">Media</option>
               <option value="low">Baja</option>
             </select>
           </label>
+          <label class="quality toggle"><input type="checkbox" id="assists" /> Ayudas de conducción</label>
+          <button id="fullscreen" class="btn small-btn" type="button">Pantalla completa</button>
         </div>
+        <p class="muted small settings-note">La resolución se ajusta sola si tu ordenador no llega a mantener la fluidez. Las ayudas de conducción incluyen control de estabilidad y derrape asistido (tecla <kbd>K</kbd>).</p>
         <p class="disclaimer">Juego de fans no oficial, sin relación con Tesla ni SpaceX. Las cifras vienen de la prensa sobre la presentación (oct. 2026) y pueden cambiar.</p>
       </section>
 
@@ -95,7 +99,8 @@
           <table class="keys">
             <tr><td><kbd>W</kbd><kbd>S</kbd></td><td>Acelerar · Frenar / marcha atrás</td></tr>
             <tr><td><kbd>A</kbd><kbd>D</kbd></td><td>Girar (en el aire: alabeo / kickflip)</td></tr>
-            <tr><td><kbd>Espacio</kbd></td><td>Freno de mano · derrape</td></tr>
+            <tr><td><kbd>Espacio</kbd></td><td>Freno de mano · inicia el derrape</td></tr>
+            <tr><td>Gas en derrape</td><td>Mantiene el derrape · gira para abrir o cerrar el ángulo · suelta para recuperar</td></tr>
             <tr><td><kbd>Shift</kbd></td><td>Impulso con propulsores de gas frío</td></tr>
             <tr><td><kbd>Q</kbd></td><td>Salto con propulsores · mantener: elevación</td></tr>
             <tr><td><kbd>E</kbd></td><td>Ventilador de succión (2G de carga aerodinámica)</td></tr>
@@ -109,6 +114,7 @@
             <tr><td><kbd>C</kbd></td><td>Cambiar cámara · arrastra el ratón para orbitar</td></tr>
             <tr><td><kbd>H</kbd></td><td>Claxon</td></tr>
             <tr><td><kbd>R</kbd></td><td>Reaparecer</td></tr>
+            <tr><td><kbd>K</kbd></td><td>Activar / desactivar ayudas de conducción</td></tr>
             <tr><td><kbd>U</kbd></td><td>Cambiar km/h ↔ mph</td></tr>
             <tr><td><kbd>M</kbd> · <kbd>Esc</kbd></td><td>Silenciar · Pausa</td></tr>
           </table>
@@ -152,6 +158,7 @@
       <div class="hud-version"><span id="hud-version">Thrust</span><span id="hud-score" class="score">0 pts</span></div>
       <ul id="challenges" class="challenges"></ul>
     </div>
+    <div id="timer" class="timer"></div>
     <div class="hud-tc">
       <div id="msg" class="msg"></div>
       <div id="submsg" class="submsg"></div>
@@ -160,8 +167,12 @@
       <canvas id="minimap" width="200" height="200"></canvas>
     </div>
     <div class="hud-bc">
-      <div id="timer" class="timer"></div>
       <div class="speedo">
+        <svg class="gauge" viewBox="0 0 200 110" aria-hidden="true">
+          <path class="gauge-track" d="M 20 100 A 80 80 0 0 1 180 100" />
+          <path id="gauge-fill" class="gauge-fill" d="M 20 100 A 80 80 0 0 1 180 100" />
+        </svg>
+        <div id="gear" class="gear">N</div>
         <div class="speed"><span id="speed">0</span><span id="unit" class="unit">km/h</span></div>
         <div id="speed2" class="speed2">0 mph</div>
         <div class="power"><span id="power"></span></div>
@@ -176,11 +187,19 @@
         <span id="chip-suction" class="chip">Succión</span>
         <span id="chip-flight" class="chip">Vuelo</span>
         <span id="chip-lights" class="chip">Faros</span>
+        <span id="chip-assist" class="chip on">Ayudas</span>
         <span id="chip-cam" class="chip on">Cámara: cerca</span>
       </div>
     </div>
     <div id="hint" class="hint hidden">Pulsa <kbd>I</kbd> para ver los controles</div>
     <div id="help" class="help panel hidden"></div>
+  </div>
+
+  <div id="gpu-lost" class="screen gpu-lost hidden">
+    <div class="pause-box panel">
+      <h2>Recuperando los gráficos…</h2>
+      <p class="muted">La tarjeta gráfica se ha reiniciado. El juego sigue en pausa y volverá en un momento. Si no vuelve, baja la calidad en el menú.</p>
+    </div>
   </div>
 
   <div id="countdown" class="countdown hidden"></div>

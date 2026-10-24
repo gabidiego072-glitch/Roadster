@@ -8,7 +8,11 @@ uniform float uScale;
 void main() {
   vColor = aColor;
   vec4 mv = modelViewMatrix * vec4(position, 1.0);
-  gl_PointSize = aSize * uScale / max(-mv.z, 0.1);
+  float depth = max(-mv.z, 0.1);
+  gl_PointSize = aSize * uScale / depth;
+  // pull the sprite toward the camera by half its size so the ground does not slice it into blocks
+  // (moved along the view ray, so it stays at the same spot on screen)
+  mv.xyz *= max(depth - aSize * 0.5, 0.15) / depth;
   gl_Position = projectionMatrix * mv;
 }`;
 

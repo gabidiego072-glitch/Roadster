@@ -4,12 +4,13 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
-import { buildWorld, LAYOUT } from './world.js';
+import { buildWorld, LAYOUT, DECOR_LAYER } from './world.js';
 import { CarVisual, COLORS, setEnvMap } from './car.js';
 import { Vehicle, VERSIONS, MS_TO_MPH } from './physics.js';
 import { Input } from './input.js';
 import { GameAudio } from './audio.js';
 import { Particles } from './particles.js';
+import { SkidMarks } from './skidmarks.js';
 import { glowTexture, canvasTexture } from './geom.js';
 
 const $ = (id) => document.getElementById(id);
@@ -30,12 +31,24 @@ const store = {
 };
 
 const isTouch = matchMedia('(pointer: coarse)').matches;
-let quality = store.get('quality', isTouch ? 'low' : 'high');
+const QUALITY_IDS = ['low', 'medium', 'high', 'ultra'];
+let quality = store.get('quality2', isTouch ? 'low' : 'high');
+if (!QUALITY_IDS.includes(quality)) quality = 'high';
 let versionId = store.get('version', 'thrust');
 let colorId = store.get('color2', 'white');
 let useKmh = store.get('kmh', true);
+let assists = store.get('assists', true);
 
-// ---------------- Renderer / scene ----------------
+// Rendering presets. Pixel ratio is multiplied by an adaptive scale that keeps the frame rate up.
+const PRESETS = {
+  low: { pr: () => Math.min(devicePixelRatio, 1) * 0.85, bloom: false, shadows: false, shadowSize: 1024, refl: 0, post: false },
+  medium: { pr: () => Math.min(devicePixelRatio, 1.25), bloom: true, shadows: true, shadowSize: 2048, refl: 2, post: true },
+  high: { pr: () => Math.min(devicePixelRatio, 1.75), bloom: true, shadows: true, shadowSize: 4096, refl: 1, post: true },
+  ultra: { pr: () => Math.min(Math.max(devicePixelRatio, 1.5), 2), bloom: true, shadows: true, shadowSize: 4096, refl: 1, post: true },
+};
+const P = () => PRESETS[quality];
+
+// ---------------- Renderer ----------------
 let renderer;
 try {
   renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
@@ -51,29 +64,33 @@ renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.0;
 $('app').appendChild(renderer.domElement);
 
-const scene = new THREE.Scene();
-scene.fog = new THREE.FogExp2(0x080b16, 0.0011);
-const camera = new THREE.PerspectiveCamera(62, innerWidth / innerHeight, 0.1, 9500);
+// If the GPU driver resets, keep the game alive and redraw when the context comes back
+let contextLost = false;
+renderer.domElement.addEventListener('webglcontextlost', (e) => {
+  e.preventDefault();
+  contextLost = true;
+  $('gpu-lost').classList.remove('hidden');
+});
+renderer.domElement.addEventListener('webglcontextrestored', () => {
+  contextLost = false;
+  $('gpu-lost').classList.add('hidden');
+  renderer.shadowMap.needsUpdate = true;
+  reflFace = 0;
+});
 
-// Live reflections: a cube camera follows the car so the paint and glass mirror the real night scene
-const cubeRT = new THREE.WebGLCubeRenderTarget(256, { type: isWebGL2 ? THREE.HalfFloatType : THREE.UnsignedByteType, generateMipmaps: true, minFilter: THREE.LinearMipmapLinearFilter });
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x080b16, 0.00105);
+const camera = new THREE.PerspectiveCamera(62, innerWidth / innerHeight, 0.1, 9500);
+camera.layers.enable(DECOR_LAYER);
+
+// ---------------- Reflections ----------------
+// 8-bit cube map (cannot hold out-of-range values), refreshed one face per frame around the car.
+const cubeRT = new THREE.WebGLCubeRenderTarget(quality === 'low' ? 128 : 256, { type: THREE.UnsignedByteType, generateMipmaps: false, minFilter: THREE.LinearFilter });
 const cubeCam = new THREE.CubeCamera(0.3, 4000, cubeRT);
 scene.add(cubeCam);
 setEnvMap(cubeRT.texture);
-let cubeFrame = 0;
-function updateReflections(force) {
-  const every = quality === 'high' ? 3 : quality === 'medium' ? 8 : 30;
-  if (!force && cubeFrame++ % every) return;
-  visual.m.group.visible = false;
-  smoke.points.visible = glow.points.visible = false;
-  const auto = renderer.shadowMap.autoUpdate;
-  renderer.shadowMap.autoUpdate = false;
-  cubeCam.position.copy(visual.m.group.position).add(new THREE.Vector3(0, 0.9, 0));
-  cubeCam.update(renderer, scene);
-  renderer.shadowMap.autoUpdate = auto;
-  visual.m.group.visible = true;
-  smoke.points.visible = glow.points.visible = true;
-}
+let reflFace = 0;
+let reflTick = 0;
 
 const world = buildWorld(scene, isTouch ? 'low' : 'high');
 const vehicleWorld = {
@@ -85,53 +102,13 @@ const vehicleWorld = {
   loop: LAYOUT.loop,
 };
 const car = new Vehicle(vehicleWorld);
+car.assists = assists;
 const carColor = () => (COLORS.find((c) => c.id === colorId) || COLORS[0]).hex;
 const visual = new CarVisual(scene, carColor());
 car.setVersion(versionId);
 visual.setVersion(versionId);
 visual.doorsOpen = true;
-
-// MSAA render target so edges stay smooth with post-processing
-const composerRT = new THREE.WebGLRenderTarget(innerWidth, innerHeight, { type: isWebGL2 ? THREE.HalfFloatType : THREE.UnsignedByteType, samples: isWebGL2 ? 4 : 0 });
-const composer = new EffectComposer(renderer, composerRT);
-composer.addPass(new RenderPass(scene, camera));
-const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.5, 0.4, 1.0);
-composer.addPass(bloom);
-// cinematic finish: soft vignette, slight cool grade and fine film grain
-const finish = new ShaderPass({
-  uniforms: { tDiffuse: { value: null }, uTime: { value: 0 } },
-  vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
-  fragmentShader: `uniform sampler2D tDiffuse; uniform float uTime; varying vec2 vUv;
-    float hash(vec2 p){ return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
-    void main(){
-      vec4 c = texture2D(tDiffuse, vUv);
-      vec2 d = vUv - 0.5;
-      float vig = smoothstep(0.85, 0.25, length(d * vec2(1.15, 1.0)));
-      c.rgb *= mix(0.55, 1.0, vig);
-      c.rgb = mix(c.rgb, c.rgb * vec3(0.94, 0.98, 1.06), 0.6);
-      c.rgb += (hash(vUv * 900.0 + uTime) - 0.5) * 0.018;
-      gl_FragColor = c;
-    }`,
-});
-composer.addPass(finish);
-composer.addPass(new OutputPass());
-
-function applyQuality() {
-  const pr = quality === 'high' ? Math.min(devicePixelRatio, 2) : quality === 'medium' ? Math.min(devicePixelRatio, 1.25) : 0.85;
-  renderer.setPixelRatio(pr);
-  composer.setPixelRatio(pr);
-  renderer.setSize(innerWidth, innerHeight);
-  composer.setSize(innerWidth, innerHeight);
-  bloom.enabled = quality !== 'low';
-  world.moonLight.castShadow = quality !== 'low';
-  renderer.shadowMap.needsUpdate = true;
-}
-applyQuality();
-addEventListener('resize', () => {
-  camera.aspect = innerWidth / innerHeight;
-  camera.updateProjectionMatrix();
-  applyQuality();
-});
+const skids = new SkidMarks(scene);
 
 // particles
 const smokeTex = canvasTexture(64, 64, (ctx, w, h) => {
@@ -142,8 +119,149 @@ const smokeTex = canvasTexture(64, 64, (ctx, w, h) => {
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, w, h);
 });
-const smoke = new Particles(scene, 1600, smokeTex, false);
-const glow = new Particles(scene, 2000, glowTexture(), true);
+const smoke = new Particles(scene, 2000, smokeTex, false);
+const glow = new Particles(scene, 2400, glowTexture(), true);
+
+function hideForReflection(hide) {
+  visual.m.group.visible = !hide;
+  smoke.points.visible = glow.points.visible = !hide;
+  skids.mesh.visible = !hide;
+}
+
+function updateReflections(full) {
+  const p = P();
+  if (!full) {
+    if (p.refl === 0) return;
+    if (reflTick++ % p.refl) return;
+  }
+  hideForReflection(true);
+  const autoShadow = renderer.shadowMap.autoUpdate;
+  renderer.shadowMap.autoUpdate = false;
+  if (full) {
+    cubeCam.position.copy(visual.m.group.position).add(new THREE.Vector3(0, 0.9, 0));
+    cubeCam.update(renderer, scene);
+    reflFace = 0;
+  } else {
+    if (reflFace === 0) cubeCam.position.copy(visual.m.group.position).add(new THREE.Vector3(0, 0.9, 0));
+    const prevRT = renderer.getRenderTarget();
+    renderer.setRenderTarget(cubeRT, reflFace);
+    renderer.render(scene, cubeCam.children[reflFace]);
+    renderer.setRenderTarget(prevRT);
+    reflFace = (reflFace + 1) % 6;
+    if (reflFace === 0) cubeRT.texture.needsPMREMUpdate = true;
+  }
+  renderer.shadowMap.autoUpdate = autoShadow;
+  hideForReflection(false);
+}
+
+// ---------------- Post-processing ----------------
+const composerRT = new THREE.WebGLRenderTarget(innerWidth, innerHeight, { type: isWebGL2 ? THREE.HalfFloatType : THREE.UnsignedByteType, samples: isWebGL2 ? 4 : 0 });
+const composer = new EffectComposer(renderer, composerRT);
+composer.addPass(new RenderPass(scene, camera));
+const VERT = `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`;
+// Removes NaN/Inf pixels and clamps extreme highlights before bloom. Without this a single bad pixel
+// gets spread over the whole screen by the bloom blur and the frame turns black.
+const sanitize = new ShaderPass({
+  uniforms: { tDiffuse: { value: null } },
+  vertexShader: VERT,
+  fragmentShader: `uniform sampler2D tDiffuse; varying vec2 vUv;
+    void main(){
+      vec4 c = texture2D(tDiffuse, vUv);
+      #if __VERSION__ >= 300
+        if (any(isnan(c)) || any(isinf(c))) c = vec4(0.0, 0.0, 0.0, 1.0);
+      #else
+        if (!(c.r == c.r) || !(c.g == c.g) || !(c.b == c.b) || c.r > 1e4 || c.g > 1e4 || c.b > 1e4) c = vec4(0.0, 0.0, 0.0, 1.0);
+      #endif
+      c.rgb = clamp(c.rgb, 0.0, 40.0);
+      c.a = 1.0;
+      gl_FragColor = c;
+    }`,
+});
+composer.addPass(sanitize);
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.5, 0.45, 1.25);
+composer.addPass(bloom);
+// Cinematic finish: speed blur at the edges, slight chromatic aberration on boost, vignette, grade, grain
+const finish = new ShaderPass({
+  uniforms: { tDiffuse: { value: null }, uTime: { value: 0 }, uSpeed: { value: 0 }, uBoost: { value: 0 } },
+  vertexShader: VERT,
+  fragmentShader: `uniform sampler2D tDiffuse; uniform float uTime; uniform float uSpeed; uniform float uBoost; varying vec2 vUv;
+    float hash(vec2 p){ return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+    void main(){
+      vec2 d = vUv - 0.5;
+      float r = length(d);
+      vec4 c = texture2D(tDiffuse, vUv);
+      float amt = uSpeed * smoothstep(0.2, 0.75, r) * 0.05;
+      if (amt > 0.0008) {
+        vec4 acc = c;
+        for (int i = 1; i < 6; i++) acc += texture2D(tDiffuse, vUv - d * amt * (float(i) / 5.0));
+        c = acc / 6.0;
+      }
+      float ca = (0.0008 + uBoost * 0.006) * r;
+      c.r = texture2D(tDiffuse, vUv - d * ca).r * 0.5 + c.r * 0.5;
+      c.b = texture2D(tDiffuse, vUv + d * ca).b * 0.5 + c.b * 0.5;
+      float vig = smoothstep(0.88, 0.22, length(d * vec2(1.12, 1.0)));
+      c.rgb *= mix(0.6, 1.0, vig);
+      c.rgb = mix(c.rgb, c.rgb * vec3(0.95, 0.99, 1.05), 0.55);
+      c.rgb += (hash(vUv * 1000.0 + uTime) - 0.5) * 0.014;
+      gl_FragColor = c;
+    }`,
+});
+composer.addPass(finish);
+composer.addPass(new OutputPass());
+
+let renderScale = 1;
+function applyQuality() {
+  const p = P();
+  const pr = Math.max(0.5, p.pr() * renderScale);
+  renderer.setPixelRatio(pr);
+  composer.setPixelRatio(pr);
+  renderer.setSize(innerWidth, innerHeight);
+  composer.setSize(innerWidth, innerHeight);
+  bloom.enabled = p.bloom;
+  finish.enabled = p.post;
+  world.moonLight.castShadow = p.shadows;
+  if (world.moonLight.shadow.mapSize.x !== p.shadowSize) {
+    world.moonLight.shadow.mapSize.set(p.shadowSize, p.shadowSize);
+    if (world.moonLight.shadow.map) {
+      world.moonLight.shadow.map.dispose();
+      world.moonLight.shadow.map = null;
+    }
+  }
+  renderer.shadowMap.needsUpdate = true;
+}
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  applyQuality();
+});
+
+// Adaptive resolution: drop render scale when frames get slow, raise it again when there is headroom
+const perf = { ema: 1 / 60, lastChange: 0, slowFor: 0, fastFor: 0 };
+function adaptResolution(rawDt, now) {
+  if (document.hidden || rawDt > 0.25) return;
+  perf.ema += (rawDt - perf.ema) * 0.05;
+  if (perf.ema > 1 / 42) {
+    perf.slowFor += rawDt;
+    perf.fastFor = 0;
+  } else if (perf.ema < 1 / 57) {
+    perf.fastFor += rawDt;
+    perf.slowFor = 0;
+  } else perf.slowFor = perf.fastFor = 0;
+  if (now - perf.lastChange < 2.5) return;
+  if (perf.slowFor > 1.5 && renderScale > 0.55) {
+    renderScale = Math.max(0.55, renderScale - 0.15);
+    perf.lastChange = now;
+    perf.slowFor = 0;
+    applyQuality();
+  } else if (perf.fastFor > 5 && renderScale < 1) {
+    renderScale = Math.min(1, renderScale + 0.1);
+    perf.lastChange = now;
+    perf.fastFor = 0;
+    applyQuality();
+  }
+}
+
+applyQuality();
 
 const input = new Input();
 const audio = new GameAudio();
@@ -179,10 +297,24 @@ const zeroSixty = { state: 'idle', t: 0 };
 const quarter = { active: false, t: 0 };
 const tree = { t: -1, foul: false };
 let driftT = 0;
+let driftScore = 0;
 let maxMph = 0;
 let nextRing = 0;
 let invertedFlag = 0;
 let lastRefillMsg = 0;
+
+// ---------------- Camera state (used by respawn) ----------------
+const cam = {
+  up: new THREE.Vector3(0, 1, 0),
+  fwd: new THREE.Vector3(0, 0, 1),
+  yaw: 0,
+  pitch: 0,
+  dragging: false,
+  lastDrag: -10,
+  shake: 0,
+  fov: 62,
+  init: false,
+};
 
 // ---------------- Menu ----------------
 function buildMenu() {
@@ -222,6 +354,7 @@ function buildMenu() {
   nm.style.width = '100%';
   cEl.appendChild(nm);
   $('quality').value = quality;
+  $('assists').checked = assists;
 }
 document.querySelectorAll('.tab').forEach((t) =>
   t.addEventListener('click', () => {
@@ -231,14 +364,27 @@ document.querySelectorAll('.tab').forEach((t) =>
 );
 $('quality').addEventListener('change', (e) => {
   quality = e.target.value;
-  store.set('quality', quality);
+  store.set('quality2', quality);
+  renderScale = 1;
   applyQuality();
+});
+$('assists').addEventListener('change', (e) => {
+  assists = e.target.checked;
+  car.assists = assists;
+  store.set('assists', assists);
+});
+$('fullscreen').addEventListener('click', () => {
+  const el = document.documentElement;
+  try {
+    if (!document.fullscreenElement) el.requestFullscreen?.().catch(() => {});
+    else document.exitFullscreen?.().catch(() => {});
+  } catch {}
 });
 $('start').addEventListener('click', startGame);
 $('resume').addEventListener('click', () => setPaused(false));
 $('restart').addEventListener('click', () => {
   setPaused(false);
-  car.reset(LAYOUT.spawn.pos, LAYOUT.spawn.yaw);
+  respawn(LAYOUT.spawn.pos, LAYOUT.spawn.yaw);
 });
 $('tomenu').addEventListener('click', () => {
   $('pause').classList.add('hidden');
@@ -246,19 +392,28 @@ $('tomenu').addEventListener('click', () => {
 });
 $('help').innerHTML = document.querySelector('#tab-controls .keys').outerHTML;
 
+function respawn(pos, yaw) {
+  car.reset(pos, yaw);
+  car.assists = assists;
+  cam.init = false;
+  for (let i = 0; i < 4; i++) skids.lift(i);
+}
+
 function showMenu() {
   state = 'menu';
   buildMenu();
   $('menu').classList.remove('hidden');
   $('hud').classList.add('hidden');
   $('touch').classList.add('hidden');
-  car.reset(LAYOUT.spawn.pos, LAYOUT.spawn.yaw);
+  respawn(LAYOUT.spawn.pos, LAYOUT.spawn.yaw);
 }
 
 function startGame() {
   audio.start();
+  // the clicked button keeps keyboard focus; Space (handbrake) would press it again
+  if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
   car.setVersion(versionId);
-  car.reset(LAYOUT.spawn.pos, LAYOUT.spawn.yaw);
+  respawn(LAYOUT.spawn.pos, LAYOUT.spawn.yaw);
   visual.setColor(carColor());
   visual.setVersion(versionId);
   visual.doorsOpen = false;
@@ -266,9 +421,7 @@ function startGame() {
   best = store.get('best.' + versionId, {});
   nextRing = 0;
   $('menu').classList.add('hidden');
-  if (isTouch) {
-    $('touch').classList.remove('hidden');
-  }
+  if (isTouch) $('touch').classList.remove('hidden');
   $('hud-version').textContent = 'Roadster ' + VERSIONS[versionId].name;
   $('chip-flight').classList.toggle('na', !VERSIONS[versionId].flight);
   renderChallenges();
@@ -286,6 +439,7 @@ function setPaused(p) {
   } else if (!p && state === 'paused') {
     state = 'play';
     $('pause').classList.add('hidden');
+    if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
   }
 }
 
@@ -345,8 +499,9 @@ function showSub(text, dur = 2.5) {
 // ---------------- Effects ----------------
 const tmp = new THREE.Vector3();
 const tmp2 = new THREE.Vector3();
+const tmp3 = new THREE.Vector3();
 const white = new THREE.Color(0xd8f0ff);
-const grey = new THREE.Color(0x9a9a9a);
+const grey = new THREE.Color(0xa3a3a3);
 const dustCol = new THREE.Color(0x8a7458);
 const orange = new THREE.Color(0xffa040);
 const hazeCol = new THREE.Color(0x6f84a6);
@@ -365,7 +520,6 @@ function fireworks() {
 
 function emitEffects(dt, ctl) {
   const m = visual.m;
-  // thruster vapour
   if (car.fx.boost > 0.3) {
     for (const p of m.plumes.rear) {
       p.holder.getWorldPosition(tmp);
@@ -382,19 +536,34 @@ function emitEffects(dt, ctl) {
       if (Math.random() < 0.5) smoke.emit(tmp, tmp2.multiplyScalar(0.4), 1.4, 1, 5, white, 0.16, 1.2);
     }
   }
-  // tyre smoke while drifting or launching hard
-  if (car.grounded && (car.drifting || (ctl.throttle > 0 && car.speed < 8 && car.speed > 0.5) || (ctl.handbrake && car.speed > 5))) {
+  // tyre smoke and tyre marks while sliding, spinning or braking hard
+  const sliding = car.grounded && (car.skidding || car.drifting);
+  const slipAmt = THREE.MathUtils.clamp(Math.max(car.tireSlipR || 0, (car.tireSlipF || 0) * 0.8) * 4, 0, 1);
+  m.wheels.forEach((w, i) => {
+    const rearOrSliding = !w.front || slipAmt > 0.75 || car.drifting;
+    if (sliding && rearOrSliding) {
+      w.pivot.getWorldPosition(tmp);
+      tmp.addScaledVector(car.up, -w.r + 0.02);
+      if (car.vel.lengthSq() > 0.1) tmp3.copy(car.vel).normalize();
+      else tmp3.copy(car.fwd);
+      skids.add(i, tmp, car.normal, tmp3, w.front ? 0.26 : 0.3, Math.max(0.35, slipAmt));
+      if (Math.random() < 0.55 * (dt * 60)) {
+        tmp.addScaledVector(car.up, 0.35);
+        tmp2.set((Math.random() - 0.5) * 2, 0.9 + Math.random(), (Math.random() - 0.5) * 2).addScaledVector(car.vel, 0.15);
+        smoke.emit(tmp, tmp2, 1.8, 0.8, 4.5, grey, 0.2 + slipAmt * 0.12, 1.4, -0.3);
+      }
+    } else skids.lift(i);
+  });
+  if (car.grounded && ctl.throttle > 0 && car.speed < 6 && car.speed > 0.3 && !car.skidding) {
     for (const w of m.wheels) {
-      if (w.front && !car.drifting) continue;
+      if (w.front) continue;
       w.pivot.getWorldPosition(tmp);
       tmp.addScaledVector(car.up, -0.25);
-      tmp2.set((Math.random() - 0.5) * 2, 1 + Math.random(), (Math.random() - 0.5) * 2).addScaledVector(car.vel, 0.2);
-      smoke.emit(tmp, tmp2, 1.6, 0.8, 5, grey, 0.28, 1.5, -0.3);
+      tmp2.set((Math.random() - 0.5) * 2, 1 + Math.random(), (Math.random() - 0.5) * 2);
+      smoke.emit(tmp, tmp2, 1.4, 0.6, 4, grey, 0.18, 1.5, -0.3);
     }
   }
-  // stage haze
   if (Math.random() < (state === 'intro' ? 0.6 : 0.12) * dt * 60) {
-    // low haze along the stage edges, away from the car on the turntable
     const sx = Math.random() < 0.5 ? -1 : 1;
     tmp.set(sx * (6 + Math.random() * 8), 1.3, LAYOUT.stage.z + (Math.random() - 0.5) * 14);
     tmp2.set(sx * Math.random() * 0.8, 0.08, (Math.random() - 0.3) * 0.8);
@@ -420,16 +589,6 @@ function sparks() {
 }
 
 // ---------------- Camera ----------------
-const cam = {
-  up: new THREE.Vector3(0, 1, 0),
-  fwd: new THREE.Vector3(0, 0, 1),
-  yaw: 0,
-  pitch: 0,
-  dragging: false,
-  lastDrag: -10,
-  shake: 0,
-  fov: 62,
-};
 const CINE_SPOTS = [
   new THREE.Vector3(-14, 6, -30),
   new THREE.Vector3(-42, 10, 88),
@@ -447,37 +606,92 @@ const CINE_SPOTS = [
 renderer.domElement.addEventListener('pointerdown', (e) => {
   if (state !== 'play' && state !== 'paused') return;
   cam.dragging = true;
-  renderer.domElement.setPointerCapture(e.pointerId);
+  try {
+    renderer.domElement.setPointerCapture(e.pointerId);
+  } catch {}
 });
 renderer.domElement.addEventListener('pointermove', (e) => {
   if (!cam.dragging) return;
   cam.yaw -= e.movementX * 0.006;
-  cam.pitch = THREE.MathUtils.clamp(cam.pitch + e.movementY * 0.004, -0.3, 0.9);
+  cam.pitch = THREE.MathUtils.clamp(cam.pitch + e.movementY * 0.004, -0.25, 0.9);
   cam.lastDrag = time;
 });
 renderer.domElement.addEventListener('pointerup', () => (cam.dragging = false));
+renderer.domElement.addEventListener('pointercancel', () => (cam.dragging = false));
 
 const UPW = new THREE.Vector3(0, 1, 0);
+const camRay = new THREE.Ray();
+const camRaycaster = new THREE.Raycaster();
+const boxTmp = new THREE.Box3();
+const hitTmp = new THREE.Vector3();
+const vA = new THREE.Vector3();
+const vB = new THREE.Vector3();
+
+// distance along the ray from the car to the desired camera spot before something blocks it
+function cameraClearance(origin, dir, maxDist) {
+  let best = maxDist;
+  camRay.set(origin, dir);
+  for (const b of world.colliders) {
+    boxTmp.min.copy(b.min);
+    boxTmp.max.copy(b.max);
+    if (boxTmp.containsPoint(origin)) continue;
+    const h = camRay.intersectBox(boxTmp, hitTmp);
+    if (h) {
+      const d = h.distanceTo(origin);
+      if (d < best) best = d;
+    }
+  }
+  camRaycaster.set(origin, dir);
+  camRaycaster.far = best;
+  const hits = camRaycaster.intersectObjects(world.drivable, false);
+  if (hits.length && hits[0].distance < best) best = hits[0].distance;
+  return best;
+}
+
+function groundBelow(p) {
+  camRaycaster.set(vA.set(p.x, p.y + 3, p.z), vB.set(0, -1, 0));
+  camRaycaster.far = 12;
+  const hits = camRaycaster.intersectObjects(world.drivable, false);
+  return hits.length ? hits[0].point.y : -Infinity;
+}
+
+// rotate a unit vector toward a target around an axis (never collapses through zero length)
+function turnToward(v, target, axis, k) {
+  const cross = vA.copy(v).cross(target).dot(axis);
+  const dot = v.dot(target);
+  const ang = Math.atan2(cross, dot);
+  v.applyAxisAngle(axis, ang * k);
+}
+
 function updateCamera(dt) {
   const carPos = visual.m.group.position;
-  // reference frame that follows the car on the inverted ramp but stays level in the air
-  const upTarget = car.grounded && car.surface === 'loop' ? car.up : UPW;
-  cam.up.lerp(upTarget, 1 - Math.exp(-(car.grounded ? 5 : 1.5) * dt)).normalize();
-  let fwdTarget;
+  const onLoop = car.grounded && car.surface === 'loop';
+  const upTarget = onLoop ? car.up : UPW;
+  if (!cam.init) cam.up.copy(upTarget);
+  else cam.up.lerp(upTarget, 1 - Math.exp(-(car.grounded ? 6 : 1.8) * dt)).normalize();
+
+  // heading target: car forward, blended toward the travel direction while sliding
+  const fwdT = tmp.copy(car.fwd);
   if (car.grounded) {
-    fwdTarget = tmp.copy(car.fwd);
-    if (car.forwardSpeed < -2) fwdTarget.copy(car.vel).normalize();
+    if (car.speed > 4 && car.forwardSpeed > 0) fwdT.lerp(tmp2.copy(car.vel).normalize(), 0.4);
   } else if (car.flight) {
-    fwdTarget = tmp.set(car.fwd.x, 0, car.fwd.z).normalize();
+    fwdT.set(car.fwd.x, 0, car.fwd.z);
   } else {
-    fwdTarget = tmp.set(car.vel.x, 0, car.vel.z);
-    if (fwdTarget.lengthSq() < 4) fwdTarget.copy(cam.fwd);
-    fwdTarget.normalize();
+    tmp2.set(car.vel.x, 0, car.vel.z);
+    if (tmp2.lengthSq() > 9) fwdT.copy(tmp2);
+    else fwdT.copy(cam.fwd);
   }
-  // keep fwd perpendicular to up
-  fwdTarget.addScaledVector(cam.up, -fwdTarget.dot(cam.up)).normalize();
-  cam.fwd.lerp(fwdTarget, 1 - Math.exp(-(car.grounded ? 5 : 2) * dt));
-  cam.fwd.addScaledVector(cam.up, -cam.fwd.dot(cam.up)).normalize();
+  fwdT.addScaledVector(cam.up, -fwdT.dot(cam.up));
+  if (fwdT.lengthSq() < 1e-6) fwdT.copy(cam.fwd);
+  fwdT.normalize();
+  cam.fwd.addScaledVector(cam.up, -cam.fwd.dot(cam.up));
+  if (cam.fwd.lengthSq() < 1e-6) cam.fwd.copy(fwdT);
+  cam.fwd.normalize();
+  if (!cam.init) cam.fwd.copy(fwdT);
+  else {
+    const rate = car.grounded ? 4.2 + Math.min(car.speed, 40) * 0.06 : 2.2;
+    turnToward(cam.fwd, fwdT, cam.up, 1 - Math.exp(-rate * dt));
+  }
 
   if (!cam.dragging && time - cam.lastDrag > 1.5) {
     cam.yaw *= Math.exp(-3 * dt);
@@ -485,10 +699,7 @@ function updateCamera(dt) {
   }
 
   const spd = car.speed;
-  let desired;
-  let look;
   if (camMode === 2) {
-    // cinematic: nearest broadcast camera, long lens tracking the car
     let bestD = Infinity;
     let spot = CINE_SPOTS[0];
     for (const s of CINE_SPOTS) {
@@ -498,30 +709,39 @@ function updateCamera(dt) {
         spot = s;
       }
     }
-    desired = spot.clone();
-    if (Math.sqrt(bestD) > 140) desired = carPos.clone().add(new THREE.Vector3(30, 14, -30));
-    camera.position.lerp(desired, 1 - Math.exp(-4 * dt));
+    const desired = Math.sqrt(bestD) > 140 ? carPos.clone().add(new THREE.Vector3(30, 14, -30)) : spot.clone();
+    if (!cam.init) camera.position.copy(desired);
+    else camera.position.lerp(desired, 1 - Math.exp(-4 * dt));
     camera.up.set(0, 1, 0);
-    look = carPos.clone().addScaledVector(UPW, 0.8);
-    camera.lookAt(look);
+    camera.lookAt(carPos.x, carPos.y + 0.8, carPos.z);
     const dist = camera.position.distanceTo(carPos);
     cam.fov = THREE.MathUtils.clamp(2 * Math.atan(9 / dist) * THREE.MathUtils.RAD2DEG, 8, 60);
   } else {
-    const dist = (camMode === 0 ? 6.8 : 12) + Math.min(spd * 0.025, 3);
-    const height = camMode === 0 ? 2.1 : 4.2;
+    const dist = (camMode === 0 ? 6.6 : 11.5) + Math.min(spd * 0.022, 2.6);
+    const height = camMode === 0 ? 2.0 : 4.0;
     const f = tmp2.copy(cam.fwd).applyAxisAngle(cam.up, cam.yaw);
-    const side = new THREE.Vector3().crossVectors(cam.up, f).normalize();
+    const side = tmp3.crossVectors(cam.up, f).normalize();
     f.applyAxisAngle(side, cam.pitch);
-    desired = carPos.clone().addScaledVector(cam.up, height + cam.pitch * 3).addScaledVector(f, -dist);
-    const k = car.grounded && car.surface === 'loop' ? 14 : 9;
-    camera.position.lerp(desired, 1 - Math.exp(-k * dt));
-    // keep camera above the ground when level
-    if (cam.up.y > 0.7 && camera.position.y < 0.6) camera.position.y = 0.6;
+    const pivot = new THREE.Vector3().copy(carPos).addScaledVector(cam.up, 1.2);
+    const desired = new THREE.Vector3().copy(carPos).addScaledVector(cam.up, height + cam.pitch * 3).addScaledVector(f, -dist);
+    // keep a clear line of sight: pull the camera in front of walls, ramps and buildings
+    const toCam = desired.clone().sub(pivot);
+    const len = toCam.length();
+    toCam.divideScalar(len);
+    const clear = cameraClearance(pivot, toCam, len);
+    if (clear < len) desired.copy(pivot).addScaledVector(toCam, Math.max(1.2, clear - 0.4));
+    if (!cam.init) camera.position.copy(desired);
+    else camera.position.lerp(desired, 1 - Math.exp(-(onLoop ? 14 : 10) * dt));
+    if (cam.up.y > 0.7) {
+      const gy = groundBelow(camera.position);
+      if (camera.position.y < gy + 0.45) camera.position.y = gy + 0.45;
+    }
     camera.up.copy(cam.up);
-    look = carPos.clone().addScaledVector(cam.up, 1.0).addScaledVector(f, 2.5);
+    const look = new THREE.Vector3().copy(carPos).addScaledVector(cam.up, 1.0).addScaledVector(f, 2.5).addScaledVector(car.vel, 0.03);
     camera.lookAt(look);
-    cam.fov = 60 + Math.min(16, spd * 0.12) + car.fx.boost * 6;
+    cam.fov = 60 + Math.min(16, spd * 0.12) + car.fx.boost * 6 + (car.drifting ? 2 : 0);
   }
+  cam.init = true;
   if (cam.shake > 0) {
     cam.shake = Math.max(0, cam.shake - dt * 2.5);
     const s = cam.shake * 0.25;
@@ -531,13 +751,12 @@ function updateCamera(dt) {
   camera.fov += (cam.fov - camera.fov) * (1 - Math.exp(-4 * dt));
   camera.updateProjectionMatrix();
 
-  // shadow camera follows the car
   const ml = world.moonLight;
   ml.target.position.copy(carPos);
   ml.position.copy(carPos).add(new THREE.Vector3(-60, 120, -80));
 }
 
-function introCamera(dt) {
+function introCamera() {
   const c = LAYOUT.spawn.pos;
   const a = -0.9 + introT * 0.32;
   const r = 9 - introT * 0.5;
@@ -548,16 +767,18 @@ function introCamera(dt) {
   camera.updateProjectionMatrix();
   world.moonLight.target.position.copy(c);
   world.moonLight.position.copy(c).add(new THREE.Vector3(-60, 120, -80));
-  cam.fwd.set(0, 0, 1);
-  cam.up.set(0, 1, 0);
+  cam.init = false;
 }
 
-function menuCamera(dt) {
+function menuCamera() {
   const c = LAYOUT.spawn.pos;
-  const a = time * 0.12;
-  camera.position.set(c.x + Math.sin(a) * 7.5 - 2, c.y + 1.4, c.z + Math.cos(a) * 7.5);
+  const a = time * 0.12 + 0.6;
+  camera.position.set(c.x + Math.sin(a) * 8, c.y + 1.5, c.z + Math.cos(a) * 8);
   camera.up.set(0, 1, 0);
-  camera.lookAt(c.x - 1.5, c.y + 0.6, c.z);
+  // frame the car in the upper right, clear of the menu text on the left
+  const dir = vA.set(c.x - camera.position.x, 0, c.z - camera.position.z).normalize();
+  const right = vB.crossVectors(dir, UPW).normalize();
+  camera.lookAt(c.x - right.x * 3.4, c.y - 0.35, c.z - right.z * 3.4);
   camera.fov = 50;
   camera.updateProjectionMatrix();
   world.moonLight.target.position.copy(c);
@@ -601,6 +822,9 @@ function drawMinimap() {
   rect(ST.x - ST.w / 2, ST.z - ST.d / 2, ST.x + ST.w / 2, ST.z + ST.d / 2, '#e8edf2');
   rect(-48, -52, -13.5, 10, 'rgba(255,255,255,0.12)');
   rect(13.5, -52, 48, 10, 'rgba(255,255,255,0.12)');
+  for (const b2 of world.colliders) {
+    if (b2.max.y > 10 && !b2.crash) rect(b2.min.x, b2.min.z, b2.max.x, b2.max.z, 'rgba(255,255,255,0.18)');
+  }
   const L = LAYOUT.loop;
   rect(L.x - L.W / 2, L.z0, L.x + L.W / 2, L.z0 + L.R, '#3fd8ff');
   const K = LAYOUT.kicker;
@@ -624,7 +848,6 @@ function drawMinimap() {
     mctx.fill();
   });
   mctx.restore();
-  // car marker (always pointing up)
   mctx.setTransform(1, 0, 0, 1, 0, 0);
   mctx.fillStyle = '#e0202f';
   mctx.strokeStyle = '#fff';
@@ -692,6 +915,8 @@ function handleEvents() {
         break;
       case 'respawn':
         nextRingCheckReset();
+        cam.init = false;
+        for (let i = 0; i < 4; i++) skids.lift(i);
         break;
       case 'inverted':
         if (time - invertedFlag > 4) {
@@ -729,7 +954,6 @@ function nextRingCheckReset() {
 
 function updateTimers(dt, ctl) {
   const mph = car.forwardSpeed * MS_TO_MPH;
-  // 0-60
   if (car.grounded && car.speed < 0.3) {
     zeroSixty.state = 'armed';
   } else if (zeroSixty.state === 'armed' && car.forwardSpeed > 0.3) {
@@ -755,7 +979,6 @@ function updateTimers(dt, ctl) {
     }
   }
 
-  // drag strip: christmas tree + quarter mile
   const S = LAYOUT.strip;
   const onStrip = Math.abs(car.pos.x - S.x) < S.w / 2;
   const staged = onStrip && car.pos.z > S.zStart - 8 && car.pos.z < S.zStart && car.speed < 0.3;
@@ -804,25 +1027,28 @@ function updateTimers(dt, ctl) {
     }
   }
 
-  // top speed
   const absMph = car.speed * MS_TO_MPH;
   if (car.grounded && absMph > maxMph) maxMph = absMph;
   if (car.grounded && absMph >= 200) complete('top');
 
-  // drift
+  // drift: time + score multiplied by angle and speed
   if (car.grounded && car.drifting) {
     driftT += dt;
-    if (driftT > 0.6) {
-      timerText = `Derrape ${fmt(driftT)} s`;
+    driftScore += dt * car.speed * (car.slip || 0) * 18;
+    if (driftT > 0.5) {
+      timerText = `Derrape ${fmt(driftT)} s · ${Math.round(driftScore)} pts`;
       timerHold = 1;
     }
     if (driftT >= 3) complete('drift');
   } else if (driftT > 0) {
-    if (driftT > 1.5) score += Math.round(driftT * 150);
+    if (driftT > 1) {
+      score += Math.round(driftScore);
+      showSub(`Derrape de ${fmt(driftT)} s · +${Math.round(driftScore)} pts`, 1.8);
+    }
     driftT = 0;
+    driftScore = 0;
   }
 
-  // rings
   world.rings.forEach((r, i) => {
     const side = tmp.copy(car.pos).addScaledVector(car.up, 0.6).sub(r.center).dot(r.normal);
     const radial = tmp.addScaledVector(r.normal, -side).length();
@@ -840,6 +1066,7 @@ function updateTimers(dt, ctl) {
   });
 }
 
+const GAUGE_LEN = 251.3; // arc length of the speed gauge path
 function updateHUD(ctl) {
   const ms = car.grounded ? Math.abs(car.forwardSpeed) : car.speed;
   const mph = ms * MS_TO_MPH;
@@ -847,7 +1074,12 @@ function updateHUD(ctl) {
   $('speed').textContent = Math.round(useKmh ? kmh : mph);
   $('unit').textContent = useKmh ? 'km/h' : 'mph';
   $('speed2').textContent = useKmh ? `${Math.round(mph)} mph` : `${Math.round(kmh)} km/h`;
-  $('power').style.width = `${Math.min(100, Math.max(ctl.throttle * 60, car.fx.boost * 100, car.lonAccel > 0 ? car.lonAccel * 2.5 : 0))}%`;
+  const frac = Math.min(1, mph / VERSIONS[versionId].topMph);
+  $('gauge-fill').style.strokeDashoffset = String(GAUGE_LEN * (1 - frac));
+  $('gauge-fill').classList.toggle('boost', car.fx.boost > 0.3);
+  const vx = car.forwardSpeed;
+  $('gear').textContent = !car.grounded ? (car.flight ? 'V' : '·') : vx < -0.4 ? 'R' : car.speed < 0.3 && ctl.throttle === 0 ? 'N' : 'D';
+  $('power').style.width = `${Math.min(100, Math.max(ctl.throttle * 60, car.fx.boost * 100, (car.axFilt || 0) > 0 ? car.axFilt * 2.5 : 0))}%`;
   const liters = Math.round(car.tank * 600);
   $('tank').style.width = `${car.tank * 100}%`;
   $('tank-l').textContent = `${liters} L`;
@@ -855,9 +1087,9 @@ function updateHUD(ctl) {
   $('chip-suction').classList.toggle('on', car.suction);
   $('chip-flight').classList.toggle('on', car.flight);
   $('chip-lights').classList.toggle('on', visual.lights);
+  $('chip-assist').classList.toggle('on', assists);
   $('chip-cam').textContent = 'Cámara: ' + CAM_NAMES[camMode];
-  if (timerHold > 0) $('timer').textContent = timerText;
-  else $('timer').textContent = '';
+  $('timer').textContent = timerHold > 0 ? timerText : '';
   $('hud-score').textContent = `${score.toLocaleString('es-ES')} pts`;
 }
 
@@ -888,14 +1120,34 @@ function controls(ctl) {
     else showSub('Para el coche para abrir las puertas', 1.4);
   }
   if (ctl.roof) showSub(visual.toggleRoof() ? 'Techo de cristal colocado' : 'Techo de cristal desmontado', 1.5);
-  if (ctl.camera) camMode = (camMode + 1) % 3;
+  if (ctl.camera) {
+    camMode = (camMode + 1) % 3;
+    cam.init = false;
+  }
   if (ctl.reset) {
-    car.reset(car.lastSafe.pos, car.lastSafe.yaw);
+    respawn(car.lastSafe.pos, car.lastSafe.yaw);
     showSub('Reaparecido', 1);
+  }
+  if (ctl.assists) {
+    assists = !assists;
+    car.assists = assists;
+    store.set('assists', assists);
+    showSub(assists ? 'Ayudas de conducción ACTIVADAS (estabilidad y derrape asistido)' : 'Ayudas de conducción desactivadas', 2);
   }
   if (ctl.help) $('help').classList.toggle('hidden');
   if (ctl.mute) showSub(audio.toggleMute() ? 'Sonido silenciado' : 'Sonido activado', 1.2);
 }
+// While driving, Space/Enter must never activate a focused button (e.g. the start or resume button)
+const guardKeys = (e) => {
+  if (state !== 'play' && state !== 'intro') return;
+  if (e.code === 'Space' || e.code === 'Enter' || e.code === 'NumpadEnter') {
+    const a = document.activeElement;
+    if (a && a !== document.body && a.blur) a.blur();
+    e.preventDefault();
+  }
+};
+addEventListener('keydown', guardKeys, true);
+addEventListener('keyup', guardKeys, true);
 addEventListener('keydown', (e) => {
   if (e.code === 'KeyU') {
     useKmh = !useKmh;
@@ -908,10 +1160,19 @@ const clock = new THREE.Clock();
 const debug = { freeze: false };
 const NO_INPUT = { throttle: 0, brake: 0, steer: 0, roll: 0, pitch: 0, yawAir: 0, handbrake: false, boost: false, lift: false, descend: false, horn: false };
 
+function render() {
+  if (contextLost) return;
+  updateReflections(false);
+  if (quality === 'low') renderer.render(scene, camera);
+  else composer.render();
+}
+
 function frame() {
   requestAnimationFrame(frame);
-  const dt = Math.min(clock.getDelta(), 0.05);
+  const rawDt = clock.getDelta();
+  const dt = Math.min(rawDt, 0.05);
   time += dt;
+  adaptResolution(rawDt, time);
   const ctl = input.read(dt);
   controls(ctl);
 
@@ -933,7 +1194,7 @@ function frame() {
     car.events.length = 0;
     visual.update(dt, car, NO_INPUT);
     emitEffects(dt, NO_INPUT);
-    introCamera(dt);
+    introCamera();
     const cd = $('countdown');
     const n = 3 - Math.floor(introT - 1.5);
     if (introT > 1.5 && n >= 1) {
@@ -950,6 +1211,7 @@ function frame() {
       $('intro-title').classList.add('hidden');
       $('hud').classList.remove('hidden');
       state = 'play';
+      cam.init = false;
       world.cheer(time, 4);
       fireworks();
       $('hint').classList.remove('hidden');
@@ -958,7 +1220,7 @@ function frame() {
     audio.update(car, NO_INPUT, 1, true);
   } else if (state === 'menu') {
     visual.update(dt, car, NO_INPUT);
-    menuCamera(dt);
+    menuCamera();
     emitEffects(dt, NO_INPUT);
   }
 
@@ -969,19 +1231,61 @@ function frame() {
   const mph = car.speed * MS_TO_MPH;
   world.update(time, dt, mph, screenMessageT > time ? { message: screenMessage } : null);
   finish.uniforms.uTime.value = time % 100;
-  updateReflections(false);
+  const speedFx = state === 'play' ? THREE.MathUtils.clamp((car.speed - 25) / 70, 0, 1) : 0;
+  finish.uniforms.uSpeed.value += (speedFx - finish.uniforms.uSpeed.value) * (1 - Math.exp(-3 * dt));
+  finish.uniforms.uBoost.value += (car.fx.boost - finish.uniforms.uBoost.value) * (1 - Math.exp(-6 * dt));
   smoke.update(dt, renderer.domElement.height);
   glow.update(dt, renderer.domElement.height);
-  if (quality === 'low') renderer.render(scene, camera);
-  else composer.render();
+  skids.update(dt);
+  render();
 }
 
-// Show the menu once the first frame is ready
+// Warm-up: build every shader up front (for the screen and the off-screen targets) so the game does
+// not stutter the first time something new comes into view, then show the menu.
+function warmUp() {
+  try {
+    menuCamera();
+    updateReflections(true);
+    renderer.setRenderTarget(composerRT);
+    renderer.compile(scene, camera);
+    renderer.setRenderTarget(null);
+    renderer.compile(scene, camera);
+    composer.render();
+  } catch (err) {
+    console.warn('warm-up', err);
+  }
+}
+
 requestAnimationFrame(() => {
+  warmUp();
   frame();
   setTimeout(() => {
     $('loading').classList.add('hidden');
     showMenu();
   }, 300);
 });
-window.__game = { car, world, camera, renderer, visual, debug, get state() { return state; }, startGame, skipIntro: () => (introT = 10), setCam: (m) => (camMode = m) };
+window.__game = {
+  THREE,
+  scene,
+  composer,
+  car,
+  world,
+  camera,
+  renderer,
+  visual,
+  debug,
+  skids,
+  input,
+  get state() {
+    return state;
+  },
+  get quality() {
+    return quality;
+  },
+  get renderScale() {
+    return renderScale;
+  },
+  startGame,
+  skipIntro: () => (introT = 10),
+  setCam: (m) => (camMode = m),
+};

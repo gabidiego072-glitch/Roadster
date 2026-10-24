@@ -41,6 +41,14 @@ export const VERSIONS = {
   },
 };
 
+// Chassis and tyre parameters for the handling model (single-track / bicycle model)
+const CAR = { m: 1800, a: 1.4, b: 1.4, L: 2.8, Iz: 2900, hcg: 0.45 };
+const TIRE = { muY: 1.22, muX: 2.3, B: 15.4, C: 1.45 };
+// Simplified Pacejka curve: peaks near 7 degrees of slip and keeps ~76% grip when sliding
+function tireForce(alpha, Fmax) {
+  return Fmax * Math.sin(TIRE.C * Math.atan(TIRE.B * alpha));
+}
+
 const UP = new THREE.Vector3(0, 1, 0);
 const GRAV = new THREE.Vector3(0, -G, 0);
 const v1 = new THREE.Vector3();
@@ -68,6 +76,7 @@ export class Vehicle {
     this.up = new THREE.Vector3();
     this.left = new THREE.Vector3();
     this.events = [];
+    this.assists = true;
     this.fx = { boost: 0, lift: 0, roll: 0, rot: 0 };
     this.setVersion('thrust');
     this.reset(world.spawn.pos, world.spawn.yaw);
@@ -98,6 +107,17 @@ export class Vehicle {
     this.crashed = 0;
     this.air = null;
     this.steerScale = 1;
+    this.steerIn = 0;
+    this.steerAngle = 0;
+    this.yawRate = 0;
+    this.normalAcc = G;
+    this.axFilt = 0;
+    this.ayFilt = 0;
+    this.tireSlipF = 0;
+    this.tireSlipR = 0;
+    this.wheelspin = false;
+    this.skidding = false;
+    this.driftLatch = false;
     this.wheelSpeed = 0;
     this.latAccel = 0;
     this.lonAccel = 0;
@@ -188,7 +208,9 @@ export class Vehicle {
   leaveGround() {
     if (!this.grounded) return;
     this.grounded = false;
-    this.angVel.set(0, 0, 0);
+    this.angVel.set(0, this.yawRate, 0);
+    this.skidding = false;
+    this.drifting = false;
     this.air = {
       time: 0,
       roll: 0,
@@ -236,7 +258,7 @@ export class Vehicle {
     }
 
     const spd = this.speed;
-    const steps = Math.min(10, Math.max(1, Math.ceil((spd * dt) / 0.4)));
+    const steps = Math.min(24, Math.max(this.grounded ? Math.ceil(dt * 200) : 1, Math.ceil((spd * dt) / 0.4)));
     const h = dt / steps;
     const vf0 = this.forwardSpeed;
     for (let i = 0; i < steps; i++) {
@@ -280,57 +302,158 @@ export class Vehicle {
     v1.copy(GRAV).addScaledVector(n, -gN);
     this.vel.addScaledVector(v1, h);
 
-    let vF = this.vel.dot(fwd);
-    // motor
+    const { m, a, b, L, Iz, hcg } = CAR;
+    const assists = this.assists;
+    let vx = this.vel.dot(fwd);
+    let vy = this.vel.dot(left);
+    const speed = Math.hypot(vx, vy);
+    const absVx = Math.abs(vx);
+
+    // normal load: gravity into the surface + curvature + suction fan (2G)
+    const N = Math.max(0.25 * G, this.normalAcc);
+    const axT = THREE.MathUtils.clamp(this.axFilt, -2.5 * G, 2.5 * G);
+    let Fzf = m * ((N * b) / L) - (m * axT * hcg) / L;
+    let Fzr = m * ((N * a) / L) + (m * axT * hcg) / L;
+    Fzf = Math.max(Fzf, 0.08 * m * N);
+    Fzr = Math.max(Fzr, 0.08 * m * N);
+
+    // steering: speed-sensitive lock keeps the front tyres near peak grip, smoothed input
+    const tau = THREE.MathUtils.lerp(0.07, 0.17, THREE.MathUtils.clamp(absVx / 60, 0, 1));
+    this.steerIn += (c.steer - this.steerIn) * (1 - Math.exp(-h / tau));
+    let deltaMax = THREE.MathUtils.clamp((L * TIRE.muY * N) / Math.max(vx * vx, 1) + 0.055, 0.075, 0.58);
+    if (this.surface === 'loop') deltaMax *= 0.35;
+    let delta = this.steerIn * deltaMax;
+    const beta = Math.atan2(vy, Math.max(absVx, 1));
+    // drift assist: front wheels follow the direction of travel so slides stay controllable
+    if (assists && !c.handbrake && speed > 6 && Math.abs(beta) > 0.1 && vx > 0) {
+      const w = THREE.MathUtils.clamp((Math.abs(beta) - 0.1) / 0.25, 0, 1) * 0.85;
+      const target = THREE.MathUtils.clamp(beta, -0.62, 0.62) + this.steerIn * 0.12;
+      delta = THREE.MathUtils.lerp(delta, target, w);
+    }
+    this.steerAngle = delta;
+
+    // wheel-frame velocities and slip angles
+    const r = this.yawRate;
+    const vyf = vy + a * r;
+    const vyr = vy - b * r;
+    const cd = Math.cos(delta);
+    const sd = Math.sin(delta);
+    const vLongF = vx * cd + vyf * sd;
+    const vLatF = -vx * sd + vyf * cd;
+    const alphaF = Math.atan(vLatF / Math.max(Math.abs(vLongF), 1));
+    const alphaR = Math.atan(vyr / Math.max(absVx, 1));
+
+    // power-drift latch: starts with a slide under throttle, holds while the throttle stays in, ends on lift-off
+    if (!assists || c.handbrake || vx <= 2 || c.throttle < 0.25 || Math.abs(beta) < 0.07) this.driftLatch = false;
+    else if (this.drifting) this.driftLatch = true;
+    const powerDrift = this.driftLatch;
+
+    // longitudinal forces: tri-motor AWD (35/65), brakes (60/40), regen when coasting
+    let drive = 0;
+    let brake = 0;
     if (c.throttle > 0) {
-      if (vF < -0.5) this.vel.addScaledVector(fwd, 14 * c.throttle * h);
-      else {
-        const a = this.baseAccel * Math.min(1, 30 / Math.max(Math.abs(vF), 1));
-        this.vel.addScaledVector(fwd, a * c.throttle * h);
-      }
+      if (vx < -0.5) brake += 14 * c.throttle;
+      else drive += this.baseAccel * Math.min(1, 30 / Math.max(vx, 1)) * c.throttle;
     }
     if (c.brake > 0) {
-      if (vF > 0.5) this.vel.addScaledVector(fwd, -Math.min(14 * c.brake * h, vF));
-      else if (vF > -16) this.vel.addScaledVector(fwd, -9 * c.brake * h);
+      if (vx > 0.5) brake += 14 * c.brake;
+      else if (vx > -16) drive -= 9 * c.brake;
     }
+    const sgn = vx >= 0 ? 1 : -1;
+    const brakeF = -sgn * m * brake * Math.min(1, absVx / 0.6);
+    // while power-drifting the torque goes rearward and part of it is lost to wheelspin
+    if (powerDrift && drive > 0) drive = Math.min(drive, 7.5);
+    const frontShare = powerDrift ? 0.1 : 0.35;
+    let FxF = m * drive * frontShare + brakeF * 0.6;
+    let FxR = m * drive * (1 - frontShare) + brakeF * 0.4;
+    if (c.handbrake) {
+      // rear wheels locked: sliding friction, no rear drive
+      FxR = -sgn * 0.75 * TIRE.muY * Fzr * Math.min(1, absVx / 2) + brakeF * 0.4;
+    }
+    const capXF = TIRE.muX * Fzf;
+    const capXR = TIRE.muX * Fzr;
+    this.wheelspin = Math.abs(FxR) > capXR * 0.98 && !c.handbrake && c.throttle > 0.5;
+    FxF = THREE.MathUtils.clamp(FxF, -capXF, capXF);
+    FxR = THREE.MathUtils.clamp(FxR, -capXR, capXR);
+
+    // friction ellipse: longitudinal use reduces lateral capacity
+    let latF = Math.sqrt(Math.max(0.05, 1 - (FxF / capXF) ** 2));
+    let latR = Math.sqrt(Math.max(0.05, 1 - (FxR / capXR) ** 2));
+    if (c.handbrake) latR *= 0.45;
+    // power oversteer: throttle keeps the rear sliding once a drift has started
+    if (powerDrift) latR *= 1 - 0.45 * c.throttle;
+    let FyF = -tireForce(alphaF, TIRE.muY * Fzf * latF);
+    let FyR = -tireForce(alphaR, TIRE.muY * Fzr * latR);
+    // never push harder than what removes the axle's sideways speed in this step (low-speed stability)
+    const capF = (0.5 * m * Math.abs(vLatF)) / h;
+    const capR = (0.5 * m * Math.abs(vyr)) / h;
+    FyF = THREE.MathUtils.clamp(FyF, -capF, capF);
+    FyR = THREE.MathUtils.clamp(FyR, -capR, capR);
+
+    // body-frame totals
+    const FxCar = FxF * cd - FyF * sd + FxR;
+    const FyCar = FxF * sd + FyF * cd + FyR;
+    let Mz = a * (FxF * sd + FyF * cd) - b * FyR;
+
+    // drift controller: while power-drifting, hold a slide angle the player shapes with the steering
+    if (powerDrift && speed > 6) {
+      const dir = Math.sign(beta) || 1;
+      const into = this.steerIn * -dir; // steering into the turn makes the drift deeper
+      const betaT = dir * THREE.MathUtils.clamp(0.3 + 0.45 * into, 0.1, 0.72);
+      const rPath = this.ayFilt / Math.max(speed, 1);
+      Mz += Iz * (9 * (beta - betaT) - 3.5 * (r - rPath));
+    }
+    // stability control: damps yaw that goes beyond what the steering asks for
+    if (assists && !c.handbrake && !powerDrift) {
+      const rMax = (TIRE.muY * N) / Math.max(absVx, 1);
+      const rTarget = THREE.MathUtils.clamp((vx * Math.tan(delta)) / L, -rMax, rMax);
+      const k = 2.4;
+      Mz += -Iz * k * (r - rTarget) * Math.min(1, speed / 8);
+    }
+
+    this.vel.addScaledVector(fwd, (FxCar / m) * h);
+    this.vel.addScaledVector(left, (FyCar / m) * h);
+    let rNew = r + (Mz / Iz) * h;
+    // low speed: blend to a kinematic model (no sliding when parking)
+    const sBlend = THREE.MathUtils.clamp((speed - 0.6) / 3.5, 0, 1);
+    const rKin = (vx * Math.tan(delta)) / L;
+    rNew = rNew * sBlend + rKin * (1 - sBlend);
+    if (sBlend < 1) {
+      const lat = this.vel.dot(left);
+      this.vel.addScaledVector(left, -lat * (1 - Math.exp(-12 * (1 - sBlend) * h)));
+    }
+    this.yawRate = rNew;
+    q1.setFromAxisAngle(up, rNew * h);
+    this.quat.premultiply(q1);
+
     // cold-gas boost
     if (c.boost && this.version.thrusters && this.tank > 0) {
       this.vel.addScaledVector(fwd, this.thrustAccel * h);
       this.tank = Math.max(0, this.tank - h * 0.11);
       this.fx.boost = 1;
     }
-    // drag + rolling resistance
+    // aero drag + rolling resistance + regen when coasting
     const spd = this.vel.length();
     if (spd > 0.01) {
-      const coast = c.throttle === 0 && c.brake === 0 ? 0.5 : 0.12;
+      const coast = c.throttle === 0 && c.brake === 0 && !c.handbrake ? 0.75 : 0.15;
       const dec = Math.min(spd, (this.drag * spd * spd + coast) * h);
       this.vel.addScaledVector(v2.copy(this.vel).divideScalar(spd), -dec);
     }
-    vF = this.vel.dot(fwd);
-    const topCap = this.vTop * (this.version.thrusters ? 1.03 : 1);
-    if (vF > topCap) this.vel.addScaledVector(fwd, topCap - vF);
-
-    // steering
-    const absF = Math.abs(vF);
-    this.steerScale = THREE.MathUtils.lerp(1, 0.14, THREE.MathUtils.clamp(absF / 70, 0, 1));
-    const angle = c.steer * 0.55 * this.steerScale;
-    let yawRate = (vF * Math.tan(angle * (this.surface === 'loop' ? 0.3 : 1))) / 2.7;
-    const grip = G * (1.35 + (this.suction ? 2 : 0));
-    const maxYaw = grip / Math.max(absF, 1);
-    if (c.handbrake && absF > 4) yawRate = yawRate * 1.35 + c.steer * 0.5 * Math.sign(vF);
-    else yawRate = THREE.MathUtils.clamp(yawRate, -maxYaw, maxYaw);
-    q1.setFromAxisAngle(up, yawRate * h);
-    this.quat.premultiply(q1);
-    this.vel.applyAxisAngle(up, yawRate * h * (c.handbrake ? 0.3 : 0.92));
     this.basis();
-    const vL = this.vel.dot(this.left);
-    const decay = c.handbrake ? 1.1 : 7 + (this.suction ? 6 : 0);
-    const nvL = vL * Math.exp(-decay * h);
-    this.vel.addScaledVector(this.left, nvL - vL);
-    if (c.handbrake) this.vel.multiplyScalar(Math.exp(-0.35 * h));
-    this.latAccel = yawRate * vF;
-    this.slip = Math.atan2(Math.abs(nvL), Math.max(Math.abs(this.vel.dot(this.fwd)), 0.1));
-    this.drifting = this.slip > 0.22 && this.speed > 10;
+    vx = this.vel.dot(this.fwd);
+    const topCap = this.vTop * (this.version.thrusters ? 1.03 : 1);
+    if (vx > topCap) this.vel.addScaledVector(this.fwd, topCap - vx);
+
+    // telemetry for visuals, audio and challenges
+    const axNow = FxCar / m;
+    this.axFilt += (axNow - this.axFilt) * (1 - Math.exp(-10 * h));
+    this.ayFilt += (FyCar / m - this.ayFilt) * (1 - Math.exp(-10 * h));
+    this.latAccel = this.ayFilt;
+    this.tireSlipF = Math.abs(alphaF);
+    this.tireSlipR = Math.abs(alphaR);
+    this.slip = Math.abs(beta);
+    this.drifting = speed > 8 && (Math.abs(beta) > 0.2 || (Math.abs(alphaR) > 0.2 && Math.abs(r) > 0.3));
+    this.skidding = speed > 4 && (Math.abs(alphaR) > 0.14 || Math.abs(alphaF) > 0.2 || this.wheelspin || (c.handbrake && speed > 3));
 
     // integrate + stick to the surface
     this.pos.addScaledVector(this.vel, h);
@@ -347,7 +470,7 @@ export class Vehicle {
     else if (ds > 1e-4) {
       v1.copy(nn).sub(this.prevNormal);
       v2.copy(this.vel).normalize();
-      k = -v1.dot(v2) / ds;
+      k = THREE.MathUtils.clamp(-v1.dot(v2) / ds, -2, 2);
     }
     const v2s = this.vel.lengthSq();
     const press = -GRAV.dot(nn) + v2s * k + (this.suction ? 2 * G : 0);
@@ -355,6 +478,7 @@ export class Vehicle {
       this.leaveGround();
       return;
     }
+    this.normalAcc += (Math.max(press, 0) - this.normalAcc) * (1 - Math.exp(-30 * h));
     this.pos.copy(hit.point);
     this.vel.addScaledVector(nn, -this.vel.dot(nn));
     q1.setFromUnitVectors(this.up, nn);
@@ -388,6 +512,7 @@ export class Vehicle {
     this.quat.premultiply(q1).normalize();
     this.vel.applyAxisAngle(this.up, fix);
     this.vel.x *= Math.exp(-3 * h);
+    this.yawRate *= Math.exp(-8 * h);
   }
 
   airStep(h, c) {
@@ -504,6 +629,8 @@ export class Vehicle {
     this.normal.copy(nn);
     this.prevNormal.copy(nn);
     this.surface = hit.surface;
+    this.yawRate = THREE.MathUtils.clamp(this.angVel.y, -3, 3) * 0.5;
+    this.normalAcc = G;
     this.angVel.set(0, 0, 0);
     if (air) {
       const dist = Math.hypot(this.pos.x - air.start.x, this.pos.z - air.start.z);
@@ -557,6 +684,7 @@ export class Vehicle {
         this.pos.z -= dz2;
         if (this.vel.z > 0) this.vel.z *= -0.25;
       }
+      this.yawRate *= 0.85;
       if (spd > 8) this.events.push({ type: 'bump', speed: spd });
     }
   }
